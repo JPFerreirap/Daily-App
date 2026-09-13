@@ -3250,7 +3250,7 @@ function Login() {
   return (
     <div style={{ background: COLORS.bg, minHeight: "100vh", fontFamily: "'Work Sans', sans-serif", color: COLORS.ink }} className="flex flex-col items-center justify-center px-6">
       <div className="rounded-2xl w-full max-w-sm" style={{ background: COLORS.card, padding: "2rem" }}>
-        <p style={{ fontFamily: "'Fraunces', serif", fontSize: "1.3rem", marginBottom: "1.2rem", textAlign: "center" }}>Mis Finanzas</p>
+        <p style={{ fontFamily: "'Fraunces', serif", fontSize: "1.3rem", marginBottom: "1.2rem", textAlign: "center" }}>Daily App</p>
         {avisoConfirmacion ? (
           <p style={{ fontSize: "0.9rem", textAlign: "center" }}>
             Te enviamos un correo a <strong>{email}</strong> para confirmar tu cuenta. Ábrelo y luego vuelve a iniciar sesión acá.
