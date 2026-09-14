@@ -709,6 +709,49 @@ function DatosTab({ cuentas, setCuentas, montosFijos, setMontosFijos, indicadore
   const [nombreTemp, setNombreTemp] = useState("");
   const [descripcionTemp, setDescripcionTemp] = useState("");
   const [errorEliminarId, setErrorEliminarId] = useState(null);
+  const [errorBackup, setErrorBackup] = useState("");
+  const [okBackup, setOkBackup] = useState("");
+
+  // Backup completo: exporta/importa TODO el estado tal cual (incluye cuotas,
+  // refinanciamientos, cronogramas, etc.) para mover datos 1:1 entre esta app
+  // y la versión que corre dentro de Claude, sin pasar por Excel (que pierde
+  // esa estructura).
+  function exportarBackupJSON() {
+    const data = { cuentas, movimientos, montosFijos, indicadores, fechasFacturacion };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `daily-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  function importarBackupJSON(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setErrorBackup("");
+    setOkBackup("");
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (!Array.isArray(data.cuentas) || !Array.isArray(data.movimientos)) {
+          setErrorBackup("El archivo no tiene el formato esperado (falta cuentas o movimientos).");
+          return;
+        }
+        setCuentas(data.cuentas);
+        setMovimientos(data.movimientos);
+        setMontosFijos(data.montosFijos || []);
+        setIndicadores(data.indicadores || null);
+        setFechasFacturacion(data.fechasFacturacion || {});
+        setOkBackup(`Importado: ${data.cuentas.length} cuenta(s) y ${data.movimientos.length} movimiento(s). Esto reemplaza todos los datos actuales.`);
+      } catch (err) {
+        setErrorBackup("No se pudo leer el archivo. Verifica que sea el JSON exportado desde 'Exportar backup completo'.");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
 
   function addCuenta() {
     if (!nombre.trim()) return;
@@ -815,6 +858,26 @@ function DatosTab({ cuentas, setCuentas, montosFijos, setMontosFijos, indicadore
           </button>
         </div>
         {errorIndicadores && <p style={{ color: "#9C4A2E", fontSize: "0.8rem", marginTop: "0.5rem" }}>{errorIndicadores}</p>}
+      </div>
+
+      {/* Backup completo: para traer 1:1 lo hecho en la versión de Claude (o
+          para respaldar/migrar esta app), sin perder cuotas ni refinanciamientos. */}
+      <div className="rounded-2xl mb-5" style={{ background: COLORS.card, padding: "1rem 1.2rem" }}>
+        <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, marginBottom: "0.4rem" }}>Backup completo</div>
+        <p style={{ fontSize: "0.8rem", color: COLORS.sub, marginBottom: "0.8rem" }}>
+          Exporta o importa TODOS los datos en un solo archivo (cuentas, movimientos, cuotas, refinanciamientos, fechas de facturación), sin pasar por Excel.
+        </p>
+        <div className="flex gap-2 flex-wrap items-center">
+          <button style={ghostBtnStyle(COLORS.finanzas)} onClick={exportarBackupJSON}>
+            <Download size={15} /> Exportar backup completo
+          </button>
+          <label style={{ ...ghostBtnStyle(COLORS.finanzas), cursor: "pointer" }}>
+            <Upload size={15} /> Importar backup
+            <input type="file" accept=".json,application/json" onChange={importarBackupJSON} style={{ display: "none" }} />
+          </label>
+        </div>
+        {errorBackup && <p style={{ color: "#9C4A2E", fontSize: "0.8rem", marginTop: "0.5rem" }}>{errorBackup}</p>}
+        {okBackup && <p style={{ color: "#3B6E4F", fontSize: "0.8rem", marginTop: "0.5rem" }}>{okBackup}</p>}
       </div>
 
       <div className="flex gap-2 mb-4 flex-wrap">
