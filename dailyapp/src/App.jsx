@@ -354,6 +354,7 @@ function montoAjusteRefinanciamientoEnMes(m, mes) {
 function clasificarFacturacion(m, tarjeta) {
   if (m.esAjusteRefinanciamiento) return null;
   if (m.tipoMov === "transferencia" && m.cuentaBalance === tarjeta) return "Pago";
+  if (m.tipoMov === "transferencia" && m.medio === tarjeta) return "Gasto";
   if (m.medio !== tarjeta) return null;
   if (m.esPago) return "Pago";
   if (m.esComision) return "Comisiones";
