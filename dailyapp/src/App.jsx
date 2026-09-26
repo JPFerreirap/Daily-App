@@ -144,7 +144,7 @@ const DEFAULT_CUENTAS = [
 
 /* ---------- Persistencia ---------- */
 async function loadFinanzas(userId) {
-  let data = { cuentas: [], movimientos: [], montosFijos: [], indicadores: null, fechasFacturacion: {} };
+  let data = { cuentas: [], movimientos: [], montosFijos: [], indicadores: null, fechasFacturacion: {}, deudasLargoPlazo: [] };
   try {
     const { data: row, error } = await supabase.from("app_data").select("data").eq("user_id", userId).maybeSingle();
     if (error) throw error;
@@ -209,6 +209,16 @@ function getPeriodRange(tipo, anio, sub) {
   const start = new Date(anio, startMonth, 1);
   const end = new Date(anio, endMonthExclusive, 0);
   return { start, end };
+}
+
+// Valida en vivo lo que se escribe en un campo de Monto: dígitos, un punto
+// decimal opcional y un signo "-" opcional al inicio. Se usa en inputs de
+// texto (no type="number") porque en el teclado numérico de varios
+// celulares (Android/iOS) el signo "-" no aparece o queda bloqueado con
+// type="number", impidiendo escribir montos negativos (ajustes,
+// correcciones, etc.).
+function soloNumeroConSigno(v) {
+  return v === "" || /^-?\d*\.?\d*$/.test(v);
 }
 
 function fmtMoney(n) {
@@ -587,6 +597,7 @@ const FIN_TABS_TOP = [
 ];
 const FIN_TABS_BOTTOM = [
   { id: "detalle", name: "Detalle", icon: List },
+  { id: "deudas", name: "Deudas", icon: CreditCard },
   { id: "datos", name: "Datos", icon: Database },
   { id: "sueldo", name: "Sueldo", icon: Banknote },
 ];
@@ -598,6 +609,7 @@ function Finanzas({ onBack, userId }) {
   const [montosFijos, setMontosFijos] = useState([]);
   const [indicadores, setIndicadores] = useState(null);
   const [fechasFacturacion, setFechasFacturacion] = useState({});
+  const [deudasLargoPlazo, setDeudasLargoPlazo] = useState([]);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -607,13 +619,14 @@ function Finanzas({ onBack, userId }) {
       setMontosFijos(d.montosFijos || []);
       setIndicadores(d.indicadores || null);
       setFechasFacturacion(d.fechasFacturacion || {});
+      setDeudasLargoPlazo(d.deudasLargoPlazo || []);
       setLoaded(true);
     });
   }, [userId]);
 
   useEffect(() => {
-    if (loaded) saveFinanzas(userId, { cuentas, movimientos, montosFijos, indicadores, fechasFacturacion });
-  }, [cuentas, movimientos, montosFijos, indicadores, fechasFacturacion, loaded, userId]);
+    if (loaded) saveFinanzas(userId, { cuentas, movimientos, montosFijos, indicadores, fechasFacturacion, deudasLargoPlazo });
+  }, [cuentas, movimientos, montosFijos, indicadores, fechasFacturacion, deudasLargoPlazo, loaded, userId]);
 
   return (
     <div className="w-full max-w-2xl">
@@ -686,9 +699,12 @@ function Finanzas({ onBack, userId }) {
           setMovimientos={setMovimientos}
           fechasFacturacion={fechasFacturacion}
           setFechasFacturacion={setFechasFacturacion}
+          deudasLargoPlazo={deudasLargoPlazo}
+          setDeudasLargoPlazo={setDeudasLargoPlazo}
         />
       )}
       {tab === "detalle" && <DetalleTab cuentas={cuentas} setCuentas={setCuentas} movimientos={movimientos} setMovimientos={setMovimientos} indicadores={indicadores} fechasFacturacion={fechasFacturacion} />}
+      {tab === "deudas" && <DeudasTab cuentas={cuentas} movimientos={movimientos} deudasLargoPlazo={deudasLargoPlazo} setDeudasLargoPlazo={setDeudasLargoPlazo} />}
       {tab === "resultados" && <ResultadosTab cuentas={cuentas} movimientos={movimientos} fechasFacturacion={fechasFacturacion} />}
       {tab === "analisis" && <AnalisisTab cuentas={cuentas} movimientos={movimientos} />}
       {tab === "sueldo" && <SueldoTab />}
@@ -698,7 +714,7 @@ function Finanzas({ onBack, userId }) {
 }
 
 /* ---- 1. Datos ---- */
-function DatosTab({ cuentas, setCuentas, montosFijos, setMontosFijos, indicadores, setIndicadores, movimientos, setMovimientos, fechasFacturacion, setFechasFacturacion }) {
+function DatosTab({ cuentas, setCuentas, montosFijos, setMontosFijos, indicadores, setIndicadores, movimientos, setMovimientos, fechasFacturacion, setFechasFacturacion, deudasLargoPlazo, setDeudasLargoPlazo }) {
   const [nombre, setNombre] = useState("");
   const [tipo, setTipo] = useState("activo");
   const [descripcion, setDescripcion] = useState("");
@@ -718,7 +734,7 @@ function DatosTab({ cuentas, setCuentas, montosFijos, setMontosFijos, indicadore
   // y la versión que corre dentro de Claude, sin pasar por Excel (que pierde
   // esa estructura).
   function exportarBackupJSON() {
-    const data = { cuentas, movimientos, montosFijos, indicadores, fechasFacturacion };
+    const data = { cuentas, movimientos, montosFijos, indicadores, fechasFacturacion, deudasLargoPlazo };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -745,6 +761,7 @@ function DatosTab({ cuentas, setCuentas, montosFijos, setMontosFijos, indicadore
         setMontosFijos(data.montosFijos || []);
         setIndicadores(data.indicadores || null);
         setFechasFacturacion(data.fechasFacturacion || {});
+        setDeudasLargoPlazo(data.deudasLargoPlazo || []);
         setOkBackup(`Importado: ${data.cuentas.length} cuenta(s) y ${data.movimientos.length} movimiento(s). Esto reemplaza todos los datos actuales.`);
       } catch (err) {
         setErrorBackup("No se pudo leer el archivo. Verifica que sea el JSON exportado desde 'Exportar backup completo'.");
@@ -1149,7 +1166,7 @@ function MontosFijosTab({ montosFijos, setMontosFijos, indicadores }) {
       </p>
       <div className="flex gap-2 mb-4 flex-wrap">
         <input style={{ ...inputStyle, flex: 2 }} placeholder="Nombre (ej. Arriendo)" value={nombre} onChange={(e) => setNombre(e.target.value)} />
-        <input type="number" style={{ ...inputStyle, flex: 1 }} placeholder="Monto" value={monto} onChange={(e) => setMonto(e.target.value)} />
+        <input type="text" inputMode="decimal" style={{ ...inputStyle, flex: 1 }} placeholder="Monto" value={monto} onChange={(e) => { if (soloNumeroConSigno(e.target.value)) setMonto(e.target.value); }} />
         <select style={{ ...inputStyle, flex: 1 }} value={moneda} onChange={(e) => setMoneda(e.target.value)}>
           <option value="CLP">CLP</option>
           <option value="UF">UF</option>
@@ -1172,7 +1189,7 @@ function MontosFijosTab({ montosFijos, setMontosFijos, indicadores }) {
                 {editando ? (
                   <div className="flex items-center gap-2 flex-wrap" style={{ flex: 1 }}>
                     <input style={{ ...inputStyle, flex: 2 }} value={editTemp.nombre} onChange={(e) => setEditTemp({ ...editTemp, nombre: e.target.value })} />
-                    <input type="number" style={{ ...inputStyle, width: "7rem" }} value={editTemp.monto} onChange={(e) => setEditTemp({ ...editTemp, monto: e.target.value })} />
+                    <input type="text" inputMode="decimal" style={{ ...inputStyle, width: "7rem" }} value={editTemp.monto} onChange={(e) => { if (soloNumeroConSigno(e.target.value)) setEditTemp({ ...editTemp, monto: e.target.value }); }} />
                     <select style={{ ...inputStyle, width: "6rem" }} value={editTemp.moneda} onChange={(e) => setEditTemp({ ...editTemp, moneda: e.target.value })}>
                       <option value="CLP">CLP</option>
                       <option value="UF">UF</option>
@@ -1543,6 +1560,7 @@ function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicado
   const balancesBase = useMemo(() => cuentas.filter((c) => c.tipo === "activo" || c.tipo === "pasivo"), [cuentas]);
   const eerrBase = useMemo(() => cuentas.filter((c) => c.tipo === "ingreso" || c.tipo === "gasto"), [cuentas]);
 
+  const [mostrarAgregarMov, setMostrarAgregarMov] = useState(false);
   const [mostrarExportar, setMostrarExportar] = useState(false);
   const [exportDesde, setExportDesde] = useState(new Date().toISOString().slice(0, 7));
   const [exportHasta, setExportHasta] = useState(new Date().toISOString().slice(0, 7));
@@ -1919,109 +1937,139 @@ function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicado
 
   return (
     <div>
-      <div className="flex gap-2 mb-3 flex-wrap">
-        <select style={{ ...inputStyle, flex: "1 1 220px" }} value={tipoMov} onChange={(e) => setTipoMov(e.target.value)}>
-          {TIPOS_MOVIMIENTO.map((t) => (<option key={t.id} value={t.id}>{t.label}</option>))}
-        </select>
-        <select style={{ ...inputStyle, width: "6rem" }} value={divisa} onChange={(e) => setDivisa(e.target.value)}>
-          <option value="CLP">CLP</option>
-          <option value="USD">USD</option>
-        </select>
-      </div>
-
-      <div className="flex gap-2 mb-2 flex-wrap">
-        <input type="date" style={{ ...inputStyle, flex: 1 }} value={fecha} onChange={(e) => setFecha(e.target.value)} />
-        <input type="month" style={{ ...inputStyle, flex: 1 }} value={mesImpacto} onChange={(e) => { setMesImpacto(e.target.value); setMesImpactoManual(true); }} title="Mes impacto" />
-        {campos.includes("medio") && (
-          <select style={{ ...inputStyle, flex: 1 }} value={medio} onChange={(e) => setMedio(e.target.value)}>
-            <option value="">Medio...</option>
-            {medios.map((c) => (<option key={c.id} value={c.nombre}>{c.nombre}</option>))}
-          </select>
-        )}
-        {campos.includes("cuentaBalance") && (
-          <select style={{ ...inputStyle, flex: 1 }} value={cuentaBalance} onChange={(e) => setCuentaBalance(e.target.value)}>
-            <option value="">Cuenta Balance...</option>
-            {balances.map((c) => (<option key={c.id} value={c.nombre}>{c.nombre}</option>))}
-          </select>
-        )}
-        {tipoMov === "transferencia" && cuentaBalance === "Tarjeta USD" && (
-          <input
-            type="number"
-            style={{ ...inputStyle, flex: 1 }}
-            placeholder="USD que se están pagando"
-            value={usdPagados}
-            onChange={(e) => setUsdPagados(e.target.value)}
-            title={`Sin pagar en Tarjeta USD: US$${usdSinPagarTarjetaUSD.toLocaleString("es-CL")}`}
-          />
-        )}
-        {campos.includes("cuentaEERR") && (
-          <select style={{ ...inputStyle, flex: 1 }} value={cuentaEERR} onChange={(e) => setCuentaEERR(e.target.value)}>
-            <option value="">Cuenta EERR...</option>
-            {eerr.map((c) => (<option key={c.id} value={c.nombre}>{c.nombre}</option>))}
-          </select>
-        )}
-        {campos.includes("cuentaUnica") && (
-          <select style={{ ...inputStyle, flex: 1 }} value={cuentaUnica} onChange={(e) => setCuentaUnica(e.target.value)}>
-            <option value="">Cuenta Balance o Medio...</option>
-            {poolUnica.map((c) => (<option key={c.id} value={c.nombre}>{c.nombre}</option>))}
-          </select>
-        )}
-      </div>
-      {tipoMov === "transferencia" && cuentaBalance === "Tarjeta USD" && (
-        <p style={{ fontSize: "0.75rem", color: COLORS.sub, marginTop: "-0.5rem", marginBottom: "0.5rem" }}>
-          Sin pagar en Tarjeta USD: US${usdSinPagarTarjetaUSD.toLocaleString("es-CL")}
-        </p>
-      )}
-      {campos.includes("medio") && CUENTAS_CUOTAS.includes(medio) && (
-        <div className="flex gap-2 mb-2 flex-wrap items-center">
-          <button style={enCuotas ? btnStyle(COLORS.finanzas) : ghostBtnStyle(COLORS.finanzas)} onClick={() => setEnCuotas((v) => !v)}>
-            Pago en cuotas
-          </button>
-          {enCuotas && (
-            <>
-              <input type="number" min="2" style={{ ...inputStyle, width: "9rem" }} placeholder="Cantidad de cuotas" value={numCuotas} onChange={(e) => setNumCuotas(e.target.value)} />
-              <input type="month" style={{ ...inputStyle, width: "10rem" }} value={mesPrimeraCuota} onChange={(e) => { setMesPrimeraCuota(e.target.value); setMesPrimeraCuotaManual(true); }} title="Mes primera cuota" />
-            </>
-          )}
-          <button style={esComision ? btnStyle(COLORS.finanzas) : ghostBtnStyle(COLORS.finanzas)} onClick={() => setEsComision((v) => !v)}>
-            Comisiones
-          </button>
-          <button style={esRefinanciamiento ? btnStyle(COLORS.finanzas) : ghostBtnStyle(COLORS.finanzas)} onClick={() => setEsRefinanciamiento((v) => !v)}>
-            Refinanciamiento
-          </button>
-        </div>
-      )}
-      {campos.includes("cuentaUnica") && CUENTAS_CUOTAS.includes(cuentaUnica) && (
-        <div className="flex gap-2 mb-2 flex-wrap items-center">
-          <button
-            style={facturacionTipo ? btnStyle(COLORS.finanzas) : ghostBtnStyle(COLORS.finanzas)}
-            onClick={() => setFacturacionTipo((v) => (v ? "" : "mesPasado"))}
+      {mostrarAgregarMov && (
+        <div
+          className="fixed inset-0 flex items-center justify-center p-4"
+          style={{ background: "rgba(31,42,36,0.4)", zIndex: 50 }}
+          onClick={() => setMostrarAgregarMov(false)}
+        >
+          <style>{`
+            @media (max-width: 640px) {
+              .mov-form-row { flex-direction: column; }
+              .mov-form-row > * { width: 100% !important; flex: 1 1 auto !important; }
+            }
+          `}</style>
+          <div
+            className="w-full max-w-2xl"
+            style={{ background: COLORS.card, borderRadius: "1rem", padding: "1.2rem", maxHeight: "88vh", overflowY: "auto" }}
+            onClick={(e) => e.stopPropagation()}
           >
-            Corresponde facturación
-          </button>
-          {facturacionTipo && (
-            <>
-              <select style={{ ...inputStyle, width: "13rem" }} value={facturacionTipo} onChange={(e) => setFacturacionTipo(e.target.value)}>
-                <option value="mesPasado">Facturación mes pasado</option>
-                <option value="cuotasFuturas">Saldo de cuotas próximos meses</option>
+            <div className="flex items-center justify-between mb-3">
+              <p style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: "1.1rem" }}>Agregar movimiento</p>
+              <button onClick={() => setMostrarAgregarMov(false)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.sub, padding: "0.2rem" }}>
+                <X size={19} />
+              </button>
+            </div>
+
+            <div className="mov-form-row flex gap-2 mb-3 flex-wrap">
+              <select style={{ ...inputStyle, flex: "1 1 220px" }} value={tipoMov} onChange={(e) => setTipoMov(e.target.value)}>
+                {TIPOS_MOVIMIENTO.map((t) => (<option key={t.id} value={t.id}>{t.label}</option>))}
               </select>
-              {facturacionTipo === "cuotasFuturas" && (
-                <input type="month" style={{ ...inputStyle, width: "10rem" }} value={facturacionMesDestino} onChange={(e) => setFacturacionMesDestino(e.target.value)} title="Mes impacto al que corresponde este saldo" />
+              <select style={{ ...inputStyle, width: "6rem" }} value={divisa} onChange={(e) => setDivisa(e.target.value)}>
+                <option value="CLP">CLP</option>
+                <option value="USD">USD</option>
+              </select>
+            </div>
+
+            <div className="mov-form-row flex gap-2 mb-2 flex-wrap">
+              <input type="date" style={{ ...inputStyle, flex: 1 }} value={fecha} onChange={(e) => setFecha(e.target.value)} />
+              <input type="month" style={{ ...inputStyle, flex: 1 }} value={mesImpacto} onChange={(e) => { setMesImpacto(e.target.value); setMesImpactoManual(true); }} title="Mes impacto" />
+              {campos.includes("medio") && (
+                <select style={{ ...inputStyle, flex: 1 }} value={medio} onChange={(e) => setMedio(e.target.value)}>
+                  <option value="">Medio...</option>
+                  {medios.map((c) => (<option key={c.id} value={c.nombre}>{c.nombre}</option>))}
+                </select>
               )}
-            </>
-          )}
+              {campos.includes("cuentaBalance") && (
+                <select style={{ ...inputStyle, flex: 1 }} value={cuentaBalance} onChange={(e) => setCuentaBalance(e.target.value)}>
+                  <option value="">Cuenta Balance...</option>
+                  {balances.map((c) => (<option key={c.id} value={c.nombre}>{c.nombre}</option>))}
+                </select>
+              )}
+              {tipoMov === "transferencia" && cuentaBalance === "Tarjeta USD" && (
+                <input
+                  type="number"
+                  style={{ ...inputStyle, flex: 1 }}
+                  placeholder="USD que se están pagando"
+                  value={usdPagados}
+                  onChange={(e) => setUsdPagados(e.target.value)}
+                  title={`Sin pagar en Tarjeta USD: US$${usdSinPagarTarjetaUSD.toLocaleString("es-CL")}`}
+                />
+              )}
+              {campos.includes("cuentaEERR") && (
+                <select style={{ ...inputStyle, flex: 1 }} value={cuentaEERR} onChange={(e) => setCuentaEERR(e.target.value)}>
+                  <option value="">Cuenta EERR...</option>
+                  {eerr.map((c) => (<option key={c.id} value={c.nombre}>{c.nombre}</option>))}
+                </select>
+              )}
+              {campos.includes("cuentaUnica") && (
+                <select style={{ ...inputStyle, flex: 1 }} value={cuentaUnica} onChange={(e) => setCuentaUnica(e.target.value)}>
+                  <option value="">Cuenta Balance o Medio...</option>
+                  {poolUnica.map((c) => (<option key={c.id} value={c.nombre}>{c.nombre}</option>))}
+                </select>
+              )}
+            </div>
+            {tipoMov === "transferencia" && cuentaBalance === "Tarjeta USD" && (
+              <p style={{ fontSize: "0.75rem", color: COLORS.sub, marginTop: "-0.5rem", marginBottom: "0.5rem" }}>
+                Sin pagar en Tarjeta USD: US${usdSinPagarTarjetaUSD.toLocaleString("es-CL")}
+              </p>
+            )}
+            {campos.includes("medio") && CUENTAS_CUOTAS.includes(medio) && (
+              <div className="mov-form-row flex gap-2 mb-2 flex-wrap items-center">
+                <button style={enCuotas ? btnStyle(COLORS.finanzas) : ghostBtnStyle(COLORS.finanzas)} onClick={() => setEnCuotas((v) => !v)}>
+                  Pago en cuotas
+                </button>
+                {enCuotas && (
+                  <>
+                    <input type="number" min="2" style={{ ...inputStyle, width: "9rem" }} placeholder="Cantidad de cuotas" value={numCuotas} onChange={(e) => setNumCuotas(e.target.value)} />
+                    <input type="month" style={{ ...inputStyle, width: "10rem" }} value={mesPrimeraCuota} onChange={(e) => { setMesPrimeraCuota(e.target.value); setMesPrimeraCuotaManual(true); }} title="Mes primera cuota" />
+                  </>
+                )}
+                <button style={esComision ? btnStyle(COLORS.finanzas) : ghostBtnStyle(COLORS.finanzas)} onClick={() => setEsComision((v) => !v)}>
+                  Comisiones
+                </button>
+                <button style={esRefinanciamiento ? btnStyle(COLORS.finanzas) : ghostBtnStyle(COLORS.finanzas)} onClick={() => setEsRefinanciamiento((v) => !v)}>
+                  Refinanciamiento
+                </button>
+              </div>
+            )}
+            {campos.includes("cuentaUnica") && CUENTAS_CUOTAS.includes(cuentaUnica) && (
+              <div className="mov-form-row flex gap-2 mb-2 flex-wrap items-center">
+                <button
+                  style={facturacionTipo ? btnStyle(COLORS.finanzas) : ghostBtnStyle(COLORS.finanzas)}
+                  onClick={() => setFacturacionTipo((v) => (v ? "" : "mesPasado"))}
+                >
+                  Corresponde facturación
+                </button>
+                {facturacionTipo && (
+                  <>
+                    <select style={{ ...inputStyle, width: "13rem" }} value={facturacionTipo} onChange={(e) => setFacturacionTipo(e.target.value)}>
+                      <option value="mesPasado">Facturación mes pasado</option>
+                      <option value="cuotasFuturas">Saldo de cuotas próximos meses</option>
+                    </select>
+                    {facturacionTipo === "cuotasFuturas" && (
+                      <input type="month" style={{ ...inputStyle, width: "10rem" }} value={facturacionMesDestino} onChange={(e) => setFacturacionMesDestino(e.target.value)} title="Mes impacto al que corresponde este saldo" />
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+            <div className="mov-form-row flex gap-2 mb-2 flex-wrap">
+              <input type="text" inputMode="decimal" style={{ ...inputStyle, flex: 1 }} placeholder={`Monto (${divisa})`} value={monto} onChange={(e) => { if (soloNumeroConSigno(e.target.value)) setMonto(e.target.value); }} />
+              <input style={{ ...inputStyle, flex: 2 }} placeholder="Descripción" value={descripcion} onChange={(e) => setDescripcion(e.target.value)} />
+              <button style={btnStyle(COLORS.finanzas)} onClick={addMov}>
+                <Plus size={16} /> Agregar
+              </button>
+            </div>
+            {error && <p style={{ color: "#9C4A2E", fontSize: "0.8rem", marginBottom: 0 }}>{error}</p>}
+          </div>
         </div>
       )}
-      <div className="flex gap-2 mb-2 flex-wrap">
-        <input type="number" style={{ ...inputStyle, flex: 1 }} placeholder={`Monto (${divisa})`} value={monto} onChange={(e) => setMonto(e.target.value)} />
-        <input style={{ ...inputStyle, flex: 2 }} placeholder="Descripción" value={descripcion} onChange={(e) => setDescripcion(e.target.value)} />
-        <button style={btnStyle(COLORS.finanzas)} onClick={addMov}>
-          <Plus size={16} /> Agregar
-        </button>
-      </div>
-      {error && <p style={{ color: "#9C4A2E", fontSize: "0.8rem", marginBottom: "0.8rem" }}>{error}</p>}
 
       <div className="flex gap-2 mb-1 flex-wrap">
+        <button style={btnStyle(COLORS.finanzas)} onClick={() => setMostrarAgregarMov(true)}>
+          <Plus size={15} /> Agregar movimiento
+        </button>
         <button style={ghostBtnStyle(COLORS.finanzas)} onClick={descargarTemplate}>
           <Download size={15} /> Descargar template
         </button>
@@ -2072,7 +2120,7 @@ function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicado
                           {esDuplicada && <AlertTriangle size={16} color="#8C6E2F" title="Coincide con un movimiento ya existente" />}
                           <input type="date" style={{ ...inputStyle, width: "8.5rem" }} value={r.fecha} onChange={(e) => updateRowImport(r._id, "fecha", e.target.value)} title="Fecha" />
                           <input type="month" style={{ ...inputStyle, width: "8rem" }} value={r.mesImpacto} onChange={(e) => updateRowImport(r._id, "mesImpacto", e.target.value)} title="Mes impacto" />
-                          <input type="number" style={{ ...inputStyle, width: "7.5rem" }} value={r.monto} onChange={(e) => updateRowImport(r._id, "monto", e.target.value)} placeholder="Monto" />
+                          <input type="text" inputMode="decimal" style={{ ...inputStyle, width: "7.5rem" }} value={r.monto} onChange={(e) => { if (soloNumeroConSigno(e.target.value)) updateRowImport(r._id, "monto", e.target.value); }} placeholder="Monto" />
                           <input style={{ ...inputStyle, flex: 1 }} value={r.descripcion} onChange={(e) => updateRowImport(r._id, "descripcion", e.target.value)} placeholder="Descripción" />
                           <button onClick={() => removeRowImport(r._id)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.sub }}>
                             <Trash2 size={16} />
@@ -2242,14 +2290,15 @@ function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicado
                       <td style={{ ...tdStyle, textAlign: "right" }}>
                         {editTemp.divisa === "USD" ? (
                           <input
-                            type="number"
+                            type="text"
+                            inputMode="decimal"
                             style={{ ...inputStyle, ...cellInputStyle, textAlign: "right" }}
                             value={editTemp.montoUSD}
-                            onChange={(e) => setEditTemp({ ...editTemp, montoUSD: e.target.value })}
+                            onChange={(e) => { if (soloNumeroConSigno(e.target.value)) setEditTemp({ ...editTemp, montoUSD: e.target.value }); }}
                             placeholder="Monto USD"
                           />
                         ) : (
-                          <input type="number" style={{ ...inputStyle, ...cellInputStyle, textAlign: "right" }} value={editTemp.monto} onChange={(e) => setEditTemp({ ...editTemp, monto: e.target.value })} />
+                          <input type="text" inputMode="decimal" style={{ ...inputStyle, ...cellInputStyle, textAlign: "right" }} value={editTemp.monto} onChange={(e) => { if (soloNumeroConSigno(e.target.value)) setEditTemp({ ...editTemp, monto: e.target.value }); }} />
                         )}
                       </td>
                       <td style={tdStyle}>
@@ -2954,6 +3003,307 @@ function buildPreview(rawJson, map) {
 /* ---- Sueldo (placeholder) ---- */
 function SueldoTab() {
   return <p style={{ color: COLORS.sub, fontSize: "0.9rem" }}>Esta hoja todavía no tiene contenido — la definimos en el próximo paso.</p>;
+}
+
+/* ---- Deudas ---- */
+const DEUDAS_SUB_TABS = [
+  { id: "largoPlazo", name: "Largo Plazo" },
+  { id: "cortoPlazo", name: "Corto Plazo" },
+];
+function DeudasTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasLargoPlazo }) {
+  const [subTab, setSubTab] = useState("largoPlazo");
+  return (
+    <div>
+      <div className="flex gap-2 mb-4 flex-wrap">
+        {DEUDAS_SUB_TABS.map((t) => {
+          const isActive = subTab === t.id;
+          return (
+            <button
+              key={t.id}
+              onClick={() => setSubTab(t.id)}
+              className="rounded-full"
+              style={{
+                padding: "0.4rem 0.9rem",
+                border: `1px solid ${isActive ? COLORS.finanzas : "#DAD6C9"}`,
+                background: isActive ? COLORS.finanzas : "#fff",
+                color: isActive ? "#fff" : COLORS.ink,
+                fontFamily: "'Work Sans', sans-serif",
+                fontSize: "0.85rem",
+                cursor: "pointer",
+              }}
+            >
+              {t.name}
+            </button>
+          );
+        })}
+      </div>
+      {subTab === "largoPlazo" && <DeudaLargoPlazoTab cuentas={cuentas} movimientos={movimientos} deudasLargoPlazo={deudasLargoPlazo} setDeudasLargoPlazo={setDeudasLargoPlazo} />}
+      {subTab === "cortoPlazo" && <p style={{ color: COLORS.sub, fontSize: "0.9rem" }}>Esta hoja todavía no tiene contenido — la definimos en el próximo paso.</p>}
+    </div>
+  );
+}
+
+// Deuda de Largo Plazo: cada "cuota" es un monto inicial repartido en N
+// meses iguales (redondeados), partiendo del mes en que se agrega (el
+// último mes absorbe la diferencia de redondeo, igual que splitEnCuotas).
+// Se combinan dos orígenes:
+//  - "manual": las que el usuario carga acá a mano, para cualquier cuenta
+//    Pasivo que no sea una de las 3 tarjetas (esas ya tienen su propio
+//    sistema de cuotas en Detalle/Facturación).
+//  - "tarjeta": se agregan solas, una por cada compra en cuotas ya
+//    existente en Detalle sobre Tarjeta/Tarjeta Lider/Tarjeta USD —
+//    reutilizando el monto, cantidad de cuotas y cronograma que ya tiene
+//    ese movimiento, sin duplicar el dato.
+function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasLargoPlazo }) {
+  const mesActual = new Date().toISOString().slice(0, 7);
+
+  const cuentasPasivoManual = useMemo(
+    () => cuentas.filter((c) => c.tipo === "pasivo" && !CUENTAS_CUOTAS.includes(c.nombre)),
+    [cuentas]
+  );
+
+  const [cuenta, setCuenta] = useState("");
+  const [montoInicial, setMontoInicial] = useState("");
+  const [cantidadMeses, setCantidadMeses] = useState("");
+  const [error, setError] = useState("");
+
+  function agregarDeuda() {
+    setError("");
+    if (!cuenta) { setError("Falta seleccionar la cuenta."); return; }
+    const monto = Number(montoInicial);
+    const meses = Number(cantidadMeses);
+    if (!monto || monto <= 0) { setError("El monto inicial debe ser mayor a 0."); return; }
+    if (!meses || meses < 1 || !Number.isInteger(meses)) { setError("La cantidad de meses debe ser un entero mayor o igual a 1."); return; }
+    const partes = splitEnCuotas(monto, meses);
+    const cronograma = partes.map((m, i) => ({ mes: sumarMeses(mesActual, i), monto: m }));
+    setDeudasLargoPlazo([
+      ...deudasLargoPlazo,
+      { id: Date.now().toString(), origen: "manual", cuenta, montoInicial: monto, cantidadMeses: meses, mesInicio: mesActual, cronograma },
+    ]);
+    setCuenta("");
+    setMontoInicial("");
+    setCantidadMeses("");
+  }
+  // Al mostrar la deuda agrupada por cuenta, ya no se distingue una entrada
+  // manual de otra dentro de la misma cuenta — por eso el borrado en esa
+  // vista quita TODAS las deudas manuales cargadas a mano sobre esa cuenta
+  // (las de origen "tarjeta" nunca se borran acá: se editan/eliminan desde
+  // Detalle, como cualquier otro movimiento).
+  function eliminarManualesDeCuenta(cuentaNombre) {
+    setDeudasLargoPlazo(deudasLargoPlazo.filter((d) => d.cuenta !== cuentaNombre));
+  }
+
+  // Entradas automáticas: una por cada compra en cuotas ya existente sobre
+  // las 3 tarjetas (mismo dato que usa Facturación, sin duplicarlo).
+  const entradasTarjetas = useMemo(
+    () =>
+      movimientos
+        .filter((m) => m.esCuota && CUENTAS_CUOTAS.includes(m.medio) && m.cronograma && m.cronograma.length)
+        .map((m) => ({
+          id: m.id,
+          origen: "tarjeta",
+          cuenta: m.medio,
+          descripcion: m.descripcion,
+          montoInicial: m.monto,
+          cantidadMeses: m.cuotaTotal || m.cronograma.length,
+          mesInicio: m.mesImpacto,
+          cronograma: m.cronograma,
+        })),
+    [movimientos]
+  );
+
+  const todasLasEntradas = useMemo(() => [...entradasTarjetas, ...deudasLargoPlazo], [entradasTarjetas, deudasLargoPlazo]);
+
+  // Pagado = lo que cae en meses hasta el mes actual inclusive (mismo
+  // criterio que usa el resto de la app: "hasta el mes de hoy" ya ocurrió).
+  const conProgreso = useMemo(
+    () =>
+      todasLasEntradas.map((d) => {
+        const pagado = d.cronograma.filter((c) => c.mes <= mesActual).reduce((a, c) => a + c.monto, 0);
+        const restante = d.montoInicial - pagado;
+        return { ...d, pagado, restante };
+      }),
+    [todasLasEntradas, mesActual]
+  );
+
+  // Agrupadas por cuenta: si hay varias cuotas o refinanciamientos activos
+  // sobre la misma cuenta (p.ej. varias compras en cuotas de "Tarjeta"), se
+  // muestran sumadas en una sola fila, no una por cada compra.
+  const activasPorCuenta = useMemo(() => {
+    const grupos = {};
+    conProgreso.forEach((d) => {
+      if (!grupos[d.cuenta]) grupos[d.cuenta] = { cuenta: d.cuenta, montoInicial: 0, pagado: 0, restante: 0, tieneManual: false };
+      grupos[d.cuenta].montoInicial += d.montoInicial;
+      grupos[d.cuenta].pagado += d.pagado;
+      grupos[d.cuenta].restante += d.restante;
+      if (d.origen === "manual") grupos[d.cuenta].tieneManual = true;
+    });
+    return Object.values(grupos)
+      .filter((g) => g.restante > 0)
+      .sort((a, b) => b.restante - a.restante);
+  }, [conProgreso]);
+  const totalRestanteActivas = activasPorCuenta.reduce((a, g) => a + g.restante, 0);
+
+  // Línea temporal: desde el primer mes de inicio de cualquier entrada
+  // hasta el mes más lejano que aparezca en algún cronograma.
+  const timeline = useMemo(() => {
+    if (!todasLasEntradas.length) return [];
+    const primerMes = todasLasEntradas.reduce((min, d) => (!min || d.mesInicio < min ? d.mesInicio : min), null);
+    const ultimoMes = todasLasEntradas.reduce((max, d) => {
+      const maxDeEsta = d.cronograma.reduce((m2, c) => (c.mes > m2 ? c.mes : m2), d.mesInicio);
+      return maxDeEsta > max ? maxDeEsta : max;
+    }, primerMes);
+    const totalMeses = diffMeses(primerMes, ultimoMes) + 1;
+    return Array.from({ length: totalMeses }, (_, i) => {
+      const mes = sumarMeses(primerMes, i);
+      const total = todasLasEntradas.reduce((a, d) => {
+        const entry = d.cronograma.find((c) => c.mes === mes);
+        return a + (entry ? entry.monto : 0);
+      }, 0);
+      return { mes, total };
+    });
+  }, [todasLasEntradas]);
+  const timelineChart = useMemo(() => timeline.map((t) => ({ mesLabel: fmtMesImpacto(t.mes), total: t.total })), [timeline]);
+
+  // Deuda total por mes: cuánto queda por pagar EN TOTAL considerando ese
+  // mes y todos los que vienen después (suma del cronograma de cada deuda
+  // desde ese mes en adelante) — el saldo pendiente "desde ese mes a
+  // futuro", no lo que se paga ese mes puntual.
+  const saldoPorMesChart = useMemo(
+    () =>
+      timeline.map((t) => {
+        const saldo = todasLasEntradas.reduce(
+          (acc, d) => acc + d.cronograma.filter((c) => c.mes >= t.mes).reduce((a, c) => a + c.monto, 0),
+          0
+        );
+        return { mesLabel: fmtMesImpacto(t.mes), saldo };
+      }),
+    [timeline, todasLasEntradas]
+  );
+
+  // Resumen general: desde el inicio (incluye deudas ya totalmente pagadas).
+  const totalDeuda = todasLasEntradas.reduce((a, d) => a + d.montoInicial, 0);
+  const totalPagado = conProgreso.reduce((a, d) => a + d.pagado, 0);
+  const totalRestante = totalDeuda - totalPagado;
+  const pctPagado = totalDeuda ? (totalPagado / totalDeuda) * 100 : 0;
+  const pctRestante = totalDeuda ? 100 - pctPagado : 0;
+
+  return (
+    <div>
+      <p style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, marginBottom: "0.6rem" }}>Agregar deuda de largo plazo</p>
+      <div className="mov-form-row flex gap-2 mb-2 flex-wrap">
+        <style>{`
+          @media (max-width: 640px) {
+            .mov-form-row { flex-direction: column; }
+            .mov-form-row > * { width: 100% !important; flex: 1 1 auto !important; }
+          }
+        `}</style>
+        <select style={{ ...inputStyle, flex: 1 }} value={cuenta} onChange={(e) => setCuenta(e.target.value)}>
+          <option value="">Cuenta (Pasivo)...</option>
+          {cuentasPasivoManual.map((c) => (<option key={c.id} value={c.nombre}>{c.nombre}</option>))}
+        </select>
+        <input type="text" inputMode="decimal" style={{ ...inputStyle, flex: 1 }} placeholder="Monto inicial" value={montoInicial} onChange={(e) => { if (soloNumeroConSigno(e.target.value)) setMontoInicial(e.target.value); }} />
+        <input type="number" min="1" style={{ ...inputStyle, flex: 1 }} placeholder="Cantidad de meses" value={cantidadMeses} onChange={(e) => setCantidadMeses(e.target.value)} />
+        <button style={btnStyle(COLORS.finanzas)} onClick={agregarDeuda}>
+          <Plus size={16} /> Agregar
+        </button>
+      </div>
+      {error && <p style={{ color: "#9C4A2E", fontSize: "0.8rem", marginBottom: "0.8rem" }}>{error}</p>}
+
+      <p style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, margin: "1.2rem 0 0.6rem" }}>Deudas Activas</p>
+      {activasPorCuenta.length === 0 ? (
+        <p style={{ color: COLORS.sub, fontSize: "0.85rem", marginBottom: "1.5rem" }}>No hay deudas de largo plazo activas.</p>
+      ) : (
+        <div className="flex flex-col gap-2 mb-2">
+          {activasPorCuenta.map((g) => (
+            <div key={g.cuenta} className="flex items-center justify-between rounded-xl flex-wrap gap-2" style={{ background: COLORS.card, padding: "0.6rem 0.9rem" }}>
+              <div>
+                <div style={{ fontWeight: 500 }}>{g.cuenta}</div>
+                <div style={{ fontSize: "0.75rem", color: COLORS.sub }}>
+                  {fmtMoney(g.montoInicial)} en total · pagado {fmtMoney(g.pagado)}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <div style={{ fontWeight: 600 }}>{fmtMoney(g.restante)}</div>
+                {g.tieneManual && (
+                  <button onClick={() => eliminarManualesDeCuenta(g.cuenta)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.sub }}>
+                    <Trash2 size={16} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+          <div className="flex items-center justify-between rounded-xl flex-wrap gap-2" style={{ padding: "0.6rem 0.9rem", fontWeight: 600 }}>
+            <div>Total</div>
+            <div>{fmtMoney(totalRestanteActivas)}</div>
+          </div>
+        </div>
+      )}
+
+      <p style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, margin: "1.2rem 0 0.6rem" }}>Monto mensual</p>
+      {timelineChart.length === 0 ? (
+        <p style={{ color: COLORS.sub, fontSize: "0.85rem", marginBottom: "1.5rem" }}>Todavía no hay datos para mostrar.</p>
+      ) : (
+        <div className="rounded-2xl mb-6" style={{ background: COLORS.card, padding: "1.2rem" }}>
+          <div style={{ width: "100%", height: "220px" }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={timelineChart}>
+                <CartesianGrid stroke="#E3E0D5" vertical={false} />
+                <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
+                <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
+                <Tooltip formatter={(v) => fmtMoney(v)} />
+                <Line type="monotone" dataKey="total" stroke={COLORS.finanzas} strokeWidth={2} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      <p style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, margin: "1.2rem 0 0.6rem" }}>Deuda Total</p>
+      {saldoPorMesChart.length === 0 ? (
+        <p style={{ color: COLORS.sub, fontSize: "0.85rem", marginBottom: "1.5rem" }}>Todavía no hay datos para mostrar.</p>
+      ) : (
+        <div className="rounded-2xl mb-6" style={{ background: COLORS.card, padding: "1.2rem" }}>
+          <div style={{ width: "100%", height: "220px" }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={saldoPorMesChart}>
+                <CartesianGrid stroke="#E3E0D5" vertical={false} />
+                <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
+                <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => `${(v / 1000000).toLocaleString("es-CL", { maximumFractionDigits: 1 })}M`} />
+                <Tooltip formatter={(v) => fmtMoney(v)} />
+                <Line type="monotone" dataKey="saldo" stroke={COLORS.finanzas} strokeWidth={2} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      <p style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, marginBottom: "0.6rem" }}>Resumen</p>
+      <div className="rounded-2xl" style={{ background: COLORS.card, padding: "1rem 1.2rem" }}>
+        <div className="flex justify-between" style={{ marginBottom: "0.4rem" }}>
+          <span style={{ color: COLORS.sub }}>Total deuda</span>
+          <span style={{ display: "flex", justifyContent: "flex-end" }}>
+            <span style={{ fontWeight: 600, minWidth: "110px", textAlign: "right" }}>{fmtMoney(totalDeuda)}</span>
+            <span style={{ minWidth: "56px" }} />
+          </span>
+        </div>
+        <div className="flex justify-between" style={{ marginBottom: "0.4rem" }}>
+          <span style={{ color: COLORS.sub }}>Monto pagado</span>
+          <span style={{ display: "flex", justifyContent: "flex-end" }}>
+            <span style={{ fontWeight: 600, minWidth: "110px", textAlign: "right" }}>{fmtMoney(totalPagado)}</span>
+            <span style={{ fontWeight: 600, minWidth: "56px", textAlign: "right", color: COLORS.sub }}>{pctPagado.toFixed(1)}%</span>
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span style={{ color: COLORS.sub }}>Monto restante</span>
+          <span style={{ display: "flex", justifyContent: "flex-end" }}>
+            <span style={{ fontWeight: 600, minWidth: "110px", textAlign: "right" }}>{fmtMoney(totalRestante)}</span>
+            <span style={{ fontWeight: 600, minWidth: "56px", textAlign: "right", color: COLORS.sub }}>{pctRestante.toFixed(1)}%</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ---- Facturación ---- */
