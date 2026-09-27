@@ -3065,6 +3065,7 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
   const [cuenta, setCuenta] = useState("");
   const [montoInicial, setMontoInicial] = useState("");
   const [cantidadMeses, setCantidadMeses] = useState("");
+  const [mesInicioInput, setMesInicioInput] = useState(mesActual);
   const [error, setError] = useState("");
 
   function agregarDeuda() {
@@ -3074,15 +3075,17 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
     const meses = Number(cantidadMeses);
     if (!monto || monto <= 0) { setError("El monto inicial debe ser mayor a 0."); return; }
     if (!meses || meses < 1 || !Number.isInteger(meses)) { setError("La cantidad de meses debe ser un entero mayor o igual a 1."); return; }
+    if (!mesInicioInput) { setError("Falta el primer mes."); return; }
     const partes = splitEnCuotas(monto, meses);
-    const cronograma = partes.map((m, i) => ({ mes: sumarMeses(mesActual, i), monto: m }));
+    const cronograma = partes.map((m, i) => ({ mes: sumarMeses(mesInicioInput, i), monto: m }));
     setDeudasLargoPlazo([
       ...deudasLargoPlazo,
-      { id: Date.now().toString(), origen: "manual", cuenta, montoInicial: monto, cantidadMeses: meses, mesInicio: mesActual, cronograma },
+      { id: Date.now().toString(), origen: "manual", cuenta, montoInicial: monto, cantidadMeses: meses, mesInicio: mesInicioInput, cronograma },
     ]);
     setCuenta("");
     setMontoInicial("");
     setCantidadMeses("");
+    setMesInicioInput(mesActual);
   }
   // Al mostrar la deuda agrupada por cuenta, ya no se distingue una entrada
   // manual de otra dentro de la misma cuenta — por eso el borrado en esa
@@ -3204,6 +3207,7 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
         </select>
         <input type="text" inputMode="decimal" style={{ ...inputStyle, flex: 1 }} placeholder="Monto inicial" value={montoInicial} onChange={(e) => { if (soloNumeroConSigno(e.target.value)) setMontoInicial(e.target.value); }} />
         <input type="number" min="1" style={{ ...inputStyle, flex: 1 }} placeholder="Cantidad de meses" value={cantidadMeses} onChange={(e) => setCantidadMeses(e.target.value)} />
+        <input type="month" style={{ ...inputStyle, flex: 1 }} value={mesInicioInput} onChange={(e) => setMesInicioInput(e.target.value)} />
         <button style={btnStyle(COLORS.finanzas)} onClick={agregarDeuda}>
           <Plus size={16} /> Agregar
         </button>
