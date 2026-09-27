@@ -3043,6 +3043,62 @@ function DeudasTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasLargoPlazo
   );
 }
 
+// Arma los datos de un gráfico de Deudas de Largo Plazo agrupados por mes
+// calendario (Ene..Dic en el eje X) con una columna/línea por cada año que
+// aparezca en el rango [primerMes, ultimoMes]. valueFn(mes) calcula el
+// valor de esa serie para un "YYYY-MM" puntual y compFn(mes) su composición
+// por cuenta (para mostrarla en el tooltip). Los meses fuera del rango real
+// de esa combinación año+mes quedan en null (así el gráfico no dibuja un
+// tramo donde ese año todavía no tiene datos).
+function buildYearlyChartData(primerMes, ultimoMes, valueFn, compFn) {
+  if (!primerMes || !ultimoMes) return { years: [], rows: [] };
+  const totalMeses = diffMeses(primerMes, ultimoMes) + 1;
+  const mesesLista = Array.from({ length: totalMeses }, (_, i) => sumarMeses(primerMes, i));
+  const mesesSet = new Set(mesesLista);
+  const years = Array.from(new Set(mesesLista.map((m) => m.slice(0, 4)))).sort();
+  const rows = MESES_ABREV.map((abrev, i) => {
+    const mesNum = String(i + 1).padStart(2, "0");
+    const row = { mesLabel: abrev.charAt(0).toUpperCase() + abrev.slice(1) };
+    years.forEach((y) => {
+      const mes = `${y}-${mesNum}`;
+      if (mesesSet.has(mes)) {
+        row[y] = valueFn(mes);
+        row[`__comp_${y}`] = compFn(mes);
+      } else {
+        row[y] = null;
+      }
+    });
+    return row;
+  });
+  return { years, rows };
+}
+
+// Tooltip a medida para los gráficos de Deudas de Largo Plazo: además del
+// total de cada año visible en ese mes, despliega debajo la composición por
+// cuenta (de dónde viene ese total), como una lista vertical.
+function DeudaTooltip({ active, payload, label }) {
+  if (!active || !payload || !payload.length) return null;
+  const puntos = payload.filter((p) => p.value != null);
+  if (!puntos.length) return null;
+  return (
+    <div style={{ background: "#fff", border: `1px solid ${COLORS.line}`, borderRadius: "0.6rem", padding: "0.6rem 0.8rem", fontSize: "0.8rem", boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
+      <div style={{ fontWeight: 600, marginBottom: "0.3rem" }}>{label}</div>
+      {puntos.map((p) => {
+        const comp = p.payload[`__comp_${p.dataKey}`] || {};
+        const entradas = Object.entries(comp).sort((a, b) => b[1] - a[1]);
+        return (
+          <div key={p.dataKey} style={{ marginBottom: "0.35rem" }}>
+            <div style={{ color: p.stroke || p.color, fontWeight: 600 }}>{p.dataKey}: {fmtMoney(p.value)}</div>
+            {entradas.map(([cuentaNombre, monto]) => (
+              <div key={cuentaNombre} style={{ paddingLeft: "0.7rem", color: COLORS.sub }}>{cuentaNombre}: {fmtMoney(monto)}</div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Deuda de Largo Plazo: cada "cuota" es un monto inicial repartido en N
 // meses iguales (redondeados), partiendo del mes en que se agrega (el
 // último mes absorbe la diferencia de redondeo, igual que splitEnCuotas).
@@ -3062,38 +3118,59 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
     [cuentas]
   );
 
+  const [nombreDeuda, setNombreDeuda] = useState("");
   const [cuenta, setCuenta] = useState("");
   const [montoInicial, setMontoInicial] = useState("");
   const [cantidadMeses, setCantidadMeses] = useState("");
   const [mesInicioInput, setMesInicioInput] = useState(mesActual);
+  // Cuota sugerida = la de la MAYORÍA de las cuotas (todas menos la última,
+  // que absorbe el redondeo). Se recalcula sola cuando cambian monto/meses,
+  // pero el usuario puede editarla a mano antes de agregar la deuda.
+  const [cuotaMensualInput, setCuotaMensualInput] = useState("");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    const monto = Number(montoInicial);
+    const meses = Number(cantidadMeses);
+    if (monto > 0 && meses >= 1 && Number.isInteger(meses)) {
+      setCuotaMensualInput(String(Math.round(monto / meses)));
+    } else {
+      setCuotaMensualInput("");
+    }
+  }, [montoInicial, cantidadMeses]);
 
   function agregarDeuda() {
     setError("");
     if (!cuenta) { setError("Falta seleccionar la cuenta."); return; }
     const monto = Number(montoInicial);
     const meses = Number(cantidadMeses);
+    const cuota = Number(cuotaMensualInput);
     if (!monto || monto <= 0) { setError("El monto inicial debe ser mayor a 0."); return; }
     if (!meses || meses < 1 || !Number.isInteger(meses)) { setError("La cantidad de meses debe ser un entero mayor o igual a 1."); return; }
     if (!mesInicioInput) { setError("Falta el primer mes."); return; }
-    const partes = splitEnCuotas(monto, meses);
+    if (!cuota || cuota <= 0) { setError("La cuota mensual debe ser mayor a 0."); return; }
+    // Todas las cuotas usan el monto editado, salvo la última: esa se
+    // ajusta para que la suma total siga calzando exacto con el monto inicial.
+    const ultima = monto - cuota * (meses - 1);
+    if (ultima <= 0) { setError("Con esa cuota mensual no queda saldo positivo para la última cuota."); return; }
+    const partes = Array(meses).fill(cuota);
+    partes[meses - 1] = ultima;
     const cronograma = partes.map((m, i) => ({ mes: sumarMeses(mesInicioInput, i), monto: m }));
     setDeudasLargoPlazo([
       ...deudasLargoPlazo,
-      { id: Date.now().toString(), origen: "manual", cuenta, montoInicial: monto, cantidadMeses: meses, mesInicio: mesInicioInput, cronograma },
+      { id: Date.now().toString(), origen: "manual", nombre: nombreDeuda.trim(), cuenta, montoInicial: monto, cantidadMeses: meses, cuotaMensual: cuota, mesInicio: mesInicioInput, cronograma },
     ]);
+    setNombreDeuda("");
     setCuenta("");
     setMontoInicial("");
     setCantidadMeses("");
     setMesInicioInput(mesActual);
   }
-  // Al mostrar la deuda agrupada por cuenta, ya no se distingue una entrada
-  // manual de otra dentro de la misma cuenta — por eso el borrado en esa
-  // vista quita TODAS las deudas manuales cargadas a mano sobre esa cuenta
-  // (las de origen "tarjeta" nunca se borran acá: se editan/eliminan desde
-  // Detalle, como cualquier otro movimiento).
-  function eliminarManualesDeCuenta(cuentaNombre) {
-    setDeudasLargoPlazo(deudasLargoPlazo.filter((d) => d.cuenta !== cuentaNombre));
+  // Elimina una deuda manual puntual (las de origen "tarjeta" nunca se
+  // borran acá: se editan/eliminan desde Detalle, como cualquier otro
+  // movimiento).
+  function eliminarDeuda(id) {
+    setDeudasLargoPlazo(deudasLargoPlazo.filter((d) => d.id !== id));
   }
 
   // Entradas automáticas: una por cada compra en cuotas ya existente sobre
@@ -3132,7 +3209,7 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
   // Agrupadas por cuenta: si hay varias cuotas o refinanciamientos activos
   // sobre la misma cuenta (p.ej. varias compras en cuotas de "Tarjeta"), se
   // muestran sumadas en una sola fila, no una por cada compra.
-  const activasPorCuenta = useMemo(() => {
+  const gruposPorCuenta = useMemo(() => {
     const grupos = {};
     conProgreso.forEach((d) => {
       if (!grupos[d.cuenta]) grupos[d.cuenta] = { cuenta: d.cuenta, montoInicial: 0, pagado: 0, restante: 0, tieneManual: false };
@@ -3141,48 +3218,81 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
       grupos[d.cuenta].restante += d.restante;
       if (d.origen === "manual") grupos[d.cuenta].tieneManual = true;
     });
-    return Object.values(grupos)
-      .filter((g) => g.restante > 0)
-      .sort((a, b) => b.restante - a.restante);
+    return Object.values(grupos);
   }, [conProgreso]);
+  // Activas: todavía queda saldo por pagar. Inactivas: ya se terminaron de
+  // pagar por completo (restante <= 0), se muestran aparte como historial.
+  const activasPorCuenta = useMemo(
+    () => gruposPorCuenta.filter((g) => g.restante > 0).sort((a, b) => b.restante - a.restante),
+    [gruposPorCuenta]
+  );
+  const inactivasPorCuenta = useMemo(
+    () => gruposPorCuenta.filter((g) => g.restante <= 0 && g.montoInicial > 0).sort((a, b) => b.montoInicial - a.montoInicial),
+    [gruposPorCuenta]
+  );
   const totalRestanteActivas = activasPorCuenta.reduce((a, g) => a + g.restante, 0);
+  const totalPagadoInactivas = inactivasPorCuenta.reduce((a, g) => a + g.montoInicial, 0);
 
-  // Línea temporal: desde el primer mes de inicio de cualquier entrada
-  // hasta el mes más lejano que aparezca en algún cronograma.
-  const timeline = useMemo(() => {
-    if (!todasLasEntradas.length) return [];
+  // Rango completo: desde el primer mes de inicio de cualquier entrada hasta
+  // el mes más lejano que aparezca en algún cronograma.
+  const { primerMes, ultimoMes } = useMemo(() => {
+    if (!todasLasEntradas.length) return { primerMes: null, ultimoMes: null };
     const primerMes = todasLasEntradas.reduce((min, d) => (!min || d.mesInicio < min ? d.mesInicio : min), null);
     const ultimoMes = todasLasEntradas.reduce((max, d) => {
       const maxDeEsta = d.cronograma.reduce((m2, c) => (c.mes > m2 ? c.mes : m2), d.mesInicio);
       return maxDeEsta > max ? maxDeEsta : max;
     }, primerMes);
-    const totalMeses = diffMeses(primerMes, ultimoMes) + 1;
-    return Array.from({ length: totalMeses }, (_, i) => {
-      const mes = sumarMeses(primerMes, i);
-      const total = todasLasEntradas.reduce((a, d) => {
-        const entry = d.cronograma.find((c) => c.mes === mes);
-        return a + (entry ? entry.monto : 0);
-      }, 0);
-      return { mes, total };
-    });
+    return { primerMes, ultimoMes };
   }, [todasLasEntradas]);
-  const timelineChart = useMemo(() => timeline.map((t) => ({ mesLabel: fmtMesImpacto(t.mes), total: t.total })), [timeline]);
 
-  // Deuda total por mes: cuánto queda por pagar EN TOTAL considerando ese
-  // mes y todos los que vienen después (suma del cronograma de cada deuda
-  // desde ese mes en adelante) — el saldo pendiente "desde ese mes a
+  // Monto mensual: cuánto se pagó o se paga(rá) puntualmente en cada mes.
+  function totalPorMes(mes) {
+    return todasLasEntradas.reduce((a, d) => {
+      const entry = d.cronograma.find((c) => c.mes === mes);
+      return a + (entry ? entry.monto : 0);
+    }, 0);
+  }
+  function composicionPorMes(mes) {
+    const comp = {};
+    todasLasEntradas.forEach((d) => {
+      const entry = d.cronograma.find((c) => c.mes === mes);
+      if (entry && entry.monto) comp[d.cuenta] = (comp[d.cuenta] || 0) + entry.monto;
+    });
+    return comp;
+  }
+  // Deuda Total: cuánto queda por pagar en total considerando ese mes y
+  // todos los que vienen después — el saldo pendiente "desde ese mes a
   // futuro", no lo que se paga ese mes puntual.
-  const saldoPorMesChart = useMemo(
-    () =>
-      timeline.map((t) => {
-        const saldo = todasLasEntradas.reduce(
-          (acc, d) => acc + d.cronograma.filter((c) => c.mes >= t.mes).reduce((a, c) => a + c.monto, 0),
-          0
-        );
-        return { mesLabel: fmtMesImpacto(t.mes), saldo };
-      }),
-    [timeline, todasLasEntradas]
+  function saldoDesdeMes(mes) {
+    return todasLasEntradas.reduce((acc, d) => acc + d.cronograma.filter((c) => c.mes >= mes).reduce((a, c) => a + c.monto, 0), 0);
+  }
+  function composicionSaldoDesdeMes(mes) {
+    const comp = {};
+    todasLasEntradas.forEach((d) => {
+      const monto = d.cronograma.filter((c) => c.mes >= mes).reduce((a, c) => a + c.monto, 0);
+      if (monto) comp[d.cuenta] = (comp[d.cuenta] || 0) + monto;
+    });
+    return comp;
+  }
+  const mensualPorAnio = useMemo(
+    () => buildYearlyChartData(primerMes, ultimoMes, totalPorMes, composicionPorMes),
+    [primerMes, ultimoMes, todasLasEntradas]
   );
+  const saldoPorAnio = useMemo(
+    () => buildYearlyChartData(primerMes, ultimoMes, saldoDesdeMes, composicionSaldoDesdeMes),
+    [primerMes, ultimoMes, todasLasEntradas]
+  );
+
+  // Filtro de años a comparar en cada gráfico (independiente entre los 2).
+  // Guarda los años EXCLUIDOS: así un año nuevo que aparezca queda visible
+  // por defecto sin necesidad de sincronizar nada.
+  const [aniosMensualExcluidos, setAniosMensualExcluidos] = useState([]);
+  const [aniosSaldoExcluidos, setAniosSaldoExcluidos] = useState([]);
+  function toggleAnio(anio, excluidos, setExcluidos) {
+    setExcluidos(excluidos.includes(anio) ? excluidos.filter((a) => a !== anio) : [...excluidos, anio]);
+  }
+  const aniosMensualVisibles = mensualPorAnio.years.filter((y) => !aniosMensualExcluidos.includes(y));
+  const aniosSaldoVisibles = saldoPorAnio.years.filter((y) => !aniosSaldoExcluidos.includes(y));
 
   // Resumen general: desde el inicio (incluye deudas ya totalmente pagadas).
   const totalDeuda = todasLasEntradas.reduce((a, d) => a + d.montoInicial, 0);
@@ -3201,6 +3311,7 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
             .mov-form-row > * { width: 100% !important; flex: 1 1 auto !important; }
           }
         `}</style>
+        <input type="text" style={{ ...inputStyle, flex: 1 }} placeholder="Nombre de la deuda (opcional)" value={nombreDeuda} onChange={(e) => setNombreDeuda(e.target.value)} />
         <select style={{ ...inputStyle, flex: 1 }} value={cuenta} onChange={(e) => setCuenta(e.target.value)}>
           <option value="">Cuenta (Pasivo)...</option>
           {cuentasPasivoManual.map((c) => (<option key={c.id} value={c.nombre}>{c.nombre}</option>))}
@@ -3208,11 +3319,41 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
         <input type="text" inputMode="decimal" style={{ ...inputStyle, flex: 1 }} placeholder="Monto inicial" value={montoInicial} onChange={(e) => { if (soloNumeroConSigno(e.target.value)) setMontoInicial(e.target.value); }} />
         <input type="number" min="1" style={{ ...inputStyle, flex: 1 }} placeholder="Cantidad de meses" value={cantidadMeses} onChange={(e) => setCantidadMeses(e.target.value)} />
         <input type="month" style={{ ...inputStyle, flex: 1 }} value={mesInicioInput} onChange={(e) => setMesInicioInput(e.target.value)} />
+        <input type="number" min="1" style={{ ...inputStyle, flex: 1 }} placeholder="Cuota mensual" value={cuotaMensualInput} onChange={(e) => setCuotaMensualInput(e.target.value)} />
         <button style={btnStyle(COLORS.finanzas)} onClick={agregarDeuda}>
           <Plus size={16} /> Agregar
         </button>
       </div>
+      <p style={{ color: COLORS.sub, fontSize: "0.75rem", marginTop: "-0.4rem", marginBottom: "0.6rem" }}>
+        La cuota mensual se sugiere sola (monto ÷ meses) pero es editable: si la cambias, la última cuota se ajusta para que la suma siga calzando con el monto inicial.
+      </p>
       {error && <p style={{ color: "#9C4A2E", fontSize: "0.8rem", marginBottom: "0.8rem" }}>{error}</p>}
+
+      <p style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, margin: "1.2rem 0 0.6rem" }}>Deudas ingresadas</p>
+      {deudasLargoPlazo.length === 0 ? (
+        <p style={{ color: COLORS.sub, fontSize: "0.85rem", marginBottom: "1.5rem" }}>Todavía no has ingresado deudas manuales.</p>
+      ) : (
+        <div className="flex flex-col gap-2 mb-2">
+          {conProgreso
+            .filter((d) => d.origen === "manual")
+            .map((d) => (
+              <div key={d.id} className="flex items-center justify-between rounded-xl flex-wrap gap-2" style={{ background: COLORS.card, padding: "0.6rem 0.9rem" }}>
+                <div>
+                  <div style={{ fontWeight: 500 }}>{d.nombre || d.cuenta}</div>
+                  <div style={{ fontSize: "0.75rem", color: COLORS.sub }}>
+                    {d.cuenta} · cuota {fmtMoney(d.cuotaMensual)}/mes · {fmtMoney(d.montoInicial)} en total · pagado {fmtMoney(d.pagado)}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div style={{ fontWeight: 600 }}>{fmtMoney(d.restante)}</div>
+                  <button onClick={() => eliminarDeuda(d.id)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.sub }}>
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
 
       <p style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, margin: "1.2rem 0 0.6rem" }}>Deudas Activas</p>
       {activasPorCuenta.length === 0 ? (
@@ -3229,11 +3370,6 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
               </div>
               <div className="flex items-center gap-2">
                 <div style={{ fontWeight: 600 }}>{fmtMoney(g.restante)}</div>
-                {g.tieneManual && (
-                  <button onClick={() => eliminarManualesDeCuenta(g.cuenta)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.sub }}>
-                    <Trash2 size={16} />
-                  </button>
-                )}
               </div>
             </div>
           ))}
@@ -3244,19 +3380,70 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
         </div>
       )}
 
+      <p style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, margin: "1.2rem 0 0.6rem" }}>Deudas Inactivas</p>
+      {inactivasPorCuenta.length === 0 ? (
+        <p style={{ color: COLORS.sub, fontSize: "0.85rem", marginBottom: "1.5rem" }}>Todavía no hay deudas pagadas por completo.</p>
+      ) : (
+        <div className="flex flex-col gap-2 mb-2">
+          {inactivasPorCuenta.map((g) => (
+            <div key={g.cuenta} className="flex items-center justify-between rounded-xl flex-wrap gap-2" style={{ background: COLORS.card, padding: "0.6rem 0.9rem", opacity: 0.7 }}>
+              <div>
+                <div style={{ fontWeight: 500 }}>{g.cuenta}</div>
+                <div style={{ fontSize: "0.75rem", color: COLORS.sub }}>Pagada por completo</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <div style={{ fontWeight: 600 }}>{fmtMoney(g.montoInicial)}</div>
+              </div>
+            </div>
+          ))}
+          <div className="flex items-center justify-between rounded-xl flex-wrap gap-2" style={{ padding: "0.6rem 0.9rem", fontWeight: 600 }}>
+            <div>Total</div>
+            <div>{fmtMoney(totalPagadoInactivas)}</div>
+          </div>
+        </div>
+      )}
+
       <p style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, margin: "1.2rem 0 0.6rem" }}>Monto mensual</p>
-      {timelineChart.length === 0 ? (
+      {mensualPorAnio.years.length === 0 ? (
         <p style={{ color: COLORS.sub, fontSize: "0.85rem", marginBottom: "1.5rem" }}>Todavía no hay datos para mostrar.</p>
       ) : (
         <div className="rounded-2xl mb-6" style={{ background: COLORS.card, padding: "1.2rem" }}>
+          <div className="flex gap-2 flex-wrap mb-2">
+            {mensualPorAnio.years.map((y, i) => {
+              const activo = !aniosMensualExcluidos.includes(y);
+              const color = PIE_COLORS[i % PIE_COLORS.length];
+              return (
+                <button
+                  key={y}
+                  onClick={() => toggleAnio(y, aniosMensualExcluidos, setAniosMensualExcluidos)}
+                  style={{
+                    border: `1px solid ${activo ? color : COLORS.line}`,
+                    background: activo ? color : "#fff",
+                    color: activo ? "#fff" : COLORS.sub,
+                    borderRadius: "1rem",
+                    padding: "0.2rem 0.7rem",
+                    fontSize: "0.78rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  {y}
+                </button>
+              );
+            })}
+          </div>
           <div style={{ width: "100%", height: "220px" }}>
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={timelineChart}>
+              <LineChart data={mensualPorAnio.rows}>
                 <CartesianGrid stroke="#E3E0D5" vertical={false} />
                 <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
                 <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
-                <Tooltip formatter={(v) => fmtMoney(v)} />
-                <Line type="monotone" dataKey="total" stroke={COLORS.finanzas} strokeWidth={2} dot={{ r: 3 }} />
+                <Tooltip content={<DeudaTooltip />} />
+                {mensualPorAnio.years.map((y, i) => (
+                  aniosMensualVisibles.includes(y) && (
+                    <Line key={y} type="monotone" dataKey={y} name={y} stroke={PIE_COLORS[i % PIE_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
+                  )
+                ))}
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -3264,18 +3451,46 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
       )}
 
       <p style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, margin: "1.2rem 0 0.6rem" }}>Deuda Total</p>
-      {saldoPorMesChart.length === 0 ? (
+      {saldoPorAnio.years.length === 0 ? (
         <p style={{ color: COLORS.sub, fontSize: "0.85rem", marginBottom: "1.5rem" }}>Todavía no hay datos para mostrar.</p>
       ) : (
         <div className="rounded-2xl mb-6" style={{ background: COLORS.card, padding: "1.2rem" }}>
+          <div className="flex gap-2 flex-wrap mb-2">
+            {saldoPorAnio.years.map((y, i) => {
+              const activo = !aniosSaldoExcluidos.includes(y);
+              const color = PIE_COLORS[i % PIE_COLORS.length];
+              return (
+                <button
+                  key={y}
+                  onClick={() => toggleAnio(y, aniosSaldoExcluidos, setAniosSaldoExcluidos)}
+                  style={{
+                    border: `1px solid ${activo ? color : COLORS.line}`,
+                    background: activo ? color : "#fff",
+                    color: activo ? "#fff" : COLORS.sub,
+                    borderRadius: "1rem",
+                    padding: "0.2rem 0.7rem",
+                    fontSize: "0.78rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  {y}
+                </button>
+              );
+            })}
+          </div>
           <div style={{ width: "100%", height: "220px" }}>
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={saldoPorMesChart}>
+              <LineChart data={saldoPorAnio.rows}>
                 <CartesianGrid stroke="#E3E0D5" vertical={false} />
                 <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
                 <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => `${(v / 1000000).toLocaleString("es-CL", { maximumFractionDigits: 1 })}M`} />
-                <Tooltip formatter={(v) => fmtMoney(v)} />
-                <Line type="monotone" dataKey="saldo" stroke={COLORS.finanzas} strokeWidth={2} dot={{ r: 3 }} />
+                <Tooltip content={<DeudaTooltip />} />
+                {saldoPorAnio.years.map((y, i) => (
+                  aniosSaldoVisibles.includes(y) && (
+                    <Line key={y} type="monotone" dataKey={y} name={y} stroke={PIE_COLORS[i % PIE_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
+                  )
+                ))}
               </LineChart>
             </ResponsiveContainer>
           </div>
