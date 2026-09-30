@@ -36,6 +36,7 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
+  ReferenceLine,
 } from "recharts";
 
 /* ---------- Paleta y helpers de estilo ---------- */
@@ -227,13 +228,25 @@ function fmtMoney(n) {
 }
 
 const MESES_ABREV = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
-// Formatea un Mes Impacto "YYYY-MM" como "ene/26" (abreviación estándar del
+// Formatea un Mes Impacto "YYYY-MM" como "ene-26" (abreviación estándar del
 // mes + últimos 2 dígitos del año), para mostrarlo en toda la app.
 function fmtMesImpacto(mesStr) {
   if (!mesStr) return "";
   const [y, m] = mesStr.split("-").map(Number);
   if (!y || !m || m < 1 || m > 12) return mesStr;
-  return `${MESES_ABREV[m - 1]}/${String(y).slice(-2)}`;
+  return `${MESES_ABREV[m - 1]}-${String(y).slice(-2)}`;
+}
+
+// Formatea una fecha "YYYY-MM-DD" como "dd/mm/aa", para mostrarla en toda
+// la app. Los <input type="date"> siguen guardando/recibiendo el valor en
+// ISO (lo exige el estándar HTML); esta función es solo para el texto que
+// se muestra, nunca para lo que se guarda o se compara.
+function fmtFecha(fechaStr) {
+  if (!fechaStr) return "";
+  const m = String(fechaStr).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return fechaStr;
+  const [, y, mes, d] = m;
+  return `${d}/${mes}/${y.slice(-2)}`;
 }
 
 /* ---------- Tabla de multiplicadores (hoja "Relación Cuentas") ----------
@@ -869,7 +882,7 @@ function DatosTab({ cuentas, setCuentas, montosFijos, setMontosFijos, indicadore
               <div style={{ fontSize: "0.75rem", color: COLORS.sub }}>UF</div>
               <div style={{ fontSize: "1.05rem", fontWeight: 600 }}>{indicadores?.uf ? fmtMoney(indicadores.uf) : "—"}</div>
             </div>
-            {indicadores?.fecha && <div style={{ fontSize: "0.72rem", color: COLORS.sub }}>Valores del {indicadores.fecha}</div>}
+            {indicadores?.fecha && <div style={{ fontSize: "0.72rem", color: COLORS.sub }}>Valores del {fmtFecha(indicadores.fecha)}</div>}
           </div>
           <button style={ghostBtnStyle(COLORS.finanzas)} onClick={actualizarIndicadores} disabled={actualizando}>
             <RefreshCw size={15} /> {actualizando ? "Actualizando..." : "Actualizar"}
@@ -1086,7 +1099,7 @@ function DatosTab({ cuentas, setCuentas, montosFijos, setMontosFijos, indicadore
                         <div style={{ fontSize: "0.9rem" }}>{c.nombre}</div>
                       )}
                       {!editando && c.descripcion && <div style={{ fontSize: "0.75rem", color: COLORS.sub }}>{c.descripcion}</div>}
-                      {c.fechaInactivacion && <div style={{ fontSize: "0.72rem", color: COLORS.sub }}>Inactiva desde {c.fechaInactivacion}</div>}
+                      {c.fechaInactivacion && <div style={{ fontSize: "0.72rem", color: COLORS.sub }}>Inactiva desde {fmtFecha(c.fechaInactivacion)}</div>}
                     </div>
                     <div className="flex items-center gap-3">
                       <span style={{ background: s.bg, color: s.text, borderRadius: "999px", padding: "0.15rem 0.6rem", fontSize: "0.75rem" }}>{s.label}</span>
@@ -2221,7 +2234,7 @@ function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicado
                 <th style={thFiltroStyle}>
                   <select style={filtroInputStyle} value={filtros.fecha} onChange={(e) => setFiltros({ ...filtros, fecha: e.target.value })}>
                     <option value="">Todas</option>
-                    {fechasDisponibles.map((f) => (<option key={f} value={f}>{f}</option>))}
+                    {fechasDisponibles.map((f) => (<option key={f} value={f}>{fmtFecha(f)}</option>))}
                   </select>
                 </th>
                 <th style={thFiltroStyle}>
@@ -2317,7 +2330,7 @@ function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicado
                       <input type="checkbox" checked={seleccionados.has(m.id)} onChange={() => toggleSeleccion(m.id)} />
                     </td>
                     <td style={tdStyle}>
-                      <span style={{ color: COLORS.sub }}>{m.fecha}</span>
+                      <span style={{ color: COLORS.sub }}>{fmtFecha(m.fecha)}</span>
                     </td>
                     <td style={tdStyle}>
                       <span style={{ color: COLORS.sub }}>{fmtMesImpacto(m.mesImpacto)}</span>
@@ -3145,6 +3158,13 @@ function DeudaTooltip({ active, payload, label }) {
 //    ese movimiento, sin duplicar el dato.
 function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasLargoPlazo }) {
   const mesActual = new Date().toISOString().slice(0, 7);
+  // Etiquetas del mes actual en cada uno de los 2 formatos de eje X que
+  // usan los gráficos, para poder marcarlo con una línea vertical roja:
+  // en modo continuo el eje usa "sep-26" (fmtMesImpacto); en modo por año
+  // usa solo el mes ("Sep"), sin año.
+  const mesActualLabelContinuo = fmtMesImpacto(mesActual);
+  const mesActualNum = Number(mesActual.slice(5, 7));
+  const mesActualLabelAnio = MESES_ABREV[mesActualNum - 1].charAt(0).toUpperCase() + MESES_ABREV[mesActualNum - 1].slice(1);
 
   // Cualquier cuenta Pasivo se puede cargar acá a mano, incluidas las 3
   // tarjetas: sirve para dejar registradas deudas antiguas de tarjeta que
@@ -3541,6 +3561,7 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
                     <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
                     <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
                     <Tooltip content={<DeudaTooltip />} />
+                    <ReferenceLine x={mesActualLabelContinuo} stroke="#C0392B" strokeDasharray="4 3" label={{ value: "Hoy", position: "top", fill: "#C0392B", fontSize: 10 }} />
                     <Line type="monotone" dataKey="valor" name="Total" stroke={COLORS.finanzas} strokeWidth={2} dot={{ r: 3 }} />
                   </LineChart>
                 </ResponsiveContainer>
@@ -3562,6 +3583,7 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
                     <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
                     <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
                     <Tooltip content={<DeudaTooltip />} />
+                    <ReferenceLine x={mesActualLabelAnio} stroke="#C0392B" strokeDasharray="4 3" label={{ value: "Hoy", position: "top", fill: "#C0392B", fontSize: 10 }} />
                     {mensualPorAnio.years.map((y, i) => (
                       aniosMensualVisibles.includes(y) && (
                         <Line key={y} type="monotone" dataKey={y} name={y} stroke={PIE_COLORS[i % PIE_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
@@ -3604,6 +3626,7 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
                     <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
                     <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => `${(v / 1000000).toLocaleString("es-CL", { maximumFractionDigits: 1 })}M`} />
                     <Tooltip content={<DeudaTooltip />} />
+                    <ReferenceLine x={mesActualLabelContinuo} stroke="#C0392B" strokeDasharray="4 3" label={{ value: "Hoy", position: "top", fill: "#C0392B", fontSize: 10 }} />
                     <Line type="monotone" dataKey="valor" name="Total" stroke={COLORS.finanzas} strokeWidth={2} dot={{ r: 3 }} />
                   </LineChart>
                 </ResponsiveContainer>
@@ -3625,6 +3648,7 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
                     <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
                     <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => `${(v / 1000000).toLocaleString("es-CL", { maximumFractionDigits: 1 })}M`} />
                     <Tooltip content={<DeudaTooltip />} />
+                    <ReferenceLine x={mesActualLabelAnio} stroke="#C0392B" strokeDasharray="4 3" label={{ value: "Hoy", position: "top", fill: "#C0392B", fontSize: 10 }} />
                     {saldoPorAnio.years.map((y, i) => (
                       aniosSaldoVisibles.includes(y) && (
                         <Line key={y} type="monotone" dataKey={y} name={y} stroke={PIE_COLORS[i % PIE_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
@@ -3856,7 +3880,7 @@ function FacturacionTab({ cuentas, movimientos, setMovimientos, fechasFacturacio
       <div className="rounded-2xl mb-4" style={{ background: COLORS.card, padding: "1.2rem" }}>
         <p style={{ fontFamily: "'Fraunces', serif", fontSize: "1.05rem", marginBottom: "0.6rem" }}>
           Facturación {tarjeta} — {fmtMesImpacto(mes)}
-          {fechasFacturacion[`${tarjeta}|${mes}`] && <span style={{ fontSize: "0.8rem", color: COLORS.sub, fontFamily: "'Work Sans', sans-serif", marginLeft: "0.6rem" }}>({fechasFacturacion[`${tarjeta}|${mes}`]})</span>}
+          {fechasFacturacion[`${tarjeta}|${mes}`] && <span style={{ fontSize: "0.8rem", color: COLORS.sub, fontFamily: "'Work Sans', sans-serif", marginLeft: "0.6rem" }}>({fmtFecha(fechasFacturacion[`${tarjeta}|${mes}`])})</span>}
         </p>
         {facturadoMesPasado !== 0 && <Row label="Facturado Mes Pasado" value={fmtMoney(facturadoMesPasado)} />}
         <Row label="Gasto" value={fmtMoney(totalGasto)} />
@@ -3915,7 +3939,7 @@ function FacturacionTab({ cuentas, movimientos, setMovimientos, fechasFacturacio
                 <th style={thFiltroStyle}>
                   <select style={filtroInputStyle} value={filtrosFact.fecha} onChange={(e) => setFiltrosFact({ ...filtrosFact, fecha: e.target.value })}>
                     <option value="">Todas</option>
-                    {fechasDisponiblesFact.map((f) => (<option key={f} value={f}>{f}</option>))}
+                    {fechasDisponiblesFact.map((f) => (<option key={f} value={f}>{fmtFecha(f)}</option>))}
                   </select>
                 </th>
                 <th style={thFiltroStyle}>
@@ -3940,7 +3964,7 @@ function FacturacionTab({ cuentas, movimientos, setMovimientos, fechasFacturacio
               ) : (
                 movsFiltrados.map((m) => (
                   <tr key={m.id} style={{ borderTop: `1px solid ${COLORS.line}` }}>
-                    <td style={tdStyle}><span style={{ color: COLORS.sub }}>{m.fecha}</span></td>
+                    <td style={tdStyle}><span style={{ color: COLORS.sub }}>{fmtFecha(m.fecha)}</span></td>
                     <td style={tdStyle}>
                       <select
                         value={m._transaccion}
