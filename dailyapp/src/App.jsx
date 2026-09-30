@@ -3340,35 +3340,30 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
     return comp;
   }
 
-  // Cada gráfico tiene 2 modos: "continuo" (línea temporal única, por
-  // defecto) y "anio" (una línea por año, con filtro de años). El modo
-  // "continuo" además se puede acotar a un periodo (Desde/Hasta).
-  const [modoMensual, setModoMensual] = useState("continuo");
-  const [modoSaldo, setModoSaldo] = useState("continuo");
-  const [rangoMensualDesde, setRangoMensualDesde] = useState("");
-  const [rangoMensualHasta, setRangoMensualHasta] = useState("");
-  const [rangoSaldoDesde, setRangoSaldoDesde] = useState("");
-  const [rangoSaldoHasta, setRangoSaldoHasta] = useState("");
-  const rangoMensualDesdeEf = rangoMensualDesde || primerMes || "";
-  const rangoMensualHastaEf = rangoMensualHasta || ultimoMes || "";
-  const rangoSaldoDesdeEf = rangoSaldoDesde || primerMes || "";
-  const rangoSaldoHastaEf = rangoSaldoHasta || ultimoMes || "";
+  // Los 2 gráficos comparten el mismo modo de visualización: "continuo"
+  // (línea temporal única, por defecto, acotable a un periodo Desde/Hasta)
+  // o "anio" (una línea por año, con filtro de años).
+  const [modoGraficoDeuda, setModoGraficoDeuda] = useState("continuo");
+  const [rangoDeudaDesde, setRangoDeudaDesde] = useState("");
+  const [rangoDeudaHasta, setRangoDeudaHasta] = useState("");
+  const rangoDeudaDesdeEf = rangoDeudaDesde || primerMes || "";
+  const rangoDeudaHastaEf = rangoDeudaHasta || ultimoMes || "";
 
   const mensualContinuo = useMemo(
     () => buildContinuousChartData(primerMes, ultimoMes, totalPorMes, composicionPorMes),
     [primerMes, ultimoMes, todasLasEntradas]
   );
   const mensualContinuoFiltrado = useMemo(
-    () => mensualContinuo.filter((r) => r.mes >= rangoMensualDesdeEf && r.mes <= rangoMensualHastaEf),
-    [mensualContinuo, rangoMensualDesdeEf, rangoMensualHastaEf]
+    () => mensualContinuo.filter((r) => r.mes >= rangoDeudaDesdeEf && r.mes <= rangoDeudaHastaEf),
+    [mensualContinuo, rangoDeudaDesdeEf, rangoDeudaHastaEf]
   );
   const saldoContinuo = useMemo(
     () => buildContinuousChartData(primerMes, ultimoMes, saldoDesdeMes, composicionSaldoDesdeMes),
     [primerMes, ultimoMes, todasLasEntradas]
   );
   const saldoContinuoFiltrado = useMemo(
-    () => saldoContinuo.filter((r) => r.mes >= rangoSaldoDesdeEf && r.mes <= rangoSaldoHastaEf),
-    [saldoContinuo, rangoSaldoDesdeEf, rangoSaldoHastaEf]
+    () => saldoContinuo.filter((r) => r.mes >= rangoDeudaDesdeEf && r.mes <= rangoDeudaHastaEf),
+    [saldoContinuo, rangoDeudaDesdeEf, rangoDeudaHastaEf]
   );
 
   const mensualPorAnio = useMemo(
@@ -3380,16 +3375,14 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
     [primerMes, ultimoMes, todasLasEntradas]
   );
 
-  // Filtro de años a comparar en cada gráfico (independiente entre los 2).
-  // Guarda los años EXCLUIDOS: así un año nuevo que aparezca queda visible
-  // por defecto sin necesidad de sincronizar nada.
-  const [aniosMensualExcluidos, setAniosMensualExcluidos] = useState([]);
-  const [aniosSaldoExcluidos, setAniosSaldoExcluidos] = useState([]);
+  // Filtro de años a comparar (compartido entre los 2 gráficos). Guarda los
+  // años EXCLUIDOS: así un año nuevo que aparezca queda visible por defecto.
+  const aniosDeudaDisponibles = mensualPorAnio.years;
+  const [aniosDeudaExcluidos, setAniosDeudaExcluidos] = useState([]);
   function toggleAnio(anio, excluidos, setExcluidos) {
     setExcluidos(excluidos.includes(anio) ? excluidos.filter((a) => a !== anio) : [...excluidos, anio]);
   }
-  const aniosMensualVisibles = mensualPorAnio.years.filter((y) => !aniosMensualExcluidos.includes(y));
-  const aniosSaldoVisibles = saldoPorAnio.years.filter((y) => !aniosSaldoExcluidos.includes(y));
+  const aniosDeudaVisibles = aniosDeudaDisponibles.filter((y) => !aniosDeudaExcluidos.includes(y));
 
   // Resumen general: desde el inicio (incluye deudas ya totalmente pagadas).
   const totalDeuda = todasLasEntradas.reduce((a, d) => a + d.montoInicial, 0);
@@ -3532,68 +3525,71 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
         </div>
       )}
 
+      {(mensualContinuo.length > 0 || saldoContinuo.length > 0) && (
+        <div className="rounded-2xl mb-4" style={{ background: COLORS.card, padding: "1.2rem" }}>
+          <p style={{ color: COLORS.sub, fontSize: "0.72rem", fontWeight: 600, marginBottom: "0.4rem" }}>
+            Visualización de "Monto mensual" y "Deuda Total" (aplica a los 2 gráficos)
+          </p>
+          <div className="flex gap-2 flex-wrap mb-2">
+            <button style={pillBtnStyle(modoGraficoDeuda === "continuo", COLORS.finanzas)} onClick={() => setModoGraficoDeuda("continuo")}>Línea continua</button>
+            <button style={pillBtnStyle(modoGraficoDeuda === "anio", COLORS.finanzas)} onClick={() => setModoGraficoDeuda("anio")}>Comparar por año</button>
+          </div>
+          {modoGraficoDeuda === "continuo" ? (
+            <div className="flex gap-2 items-center flex-wrap" style={{ fontSize: "0.8rem" }}>
+              <span style={{ color: COLORS.sub }}>Periodo:</span>
+              <input type="month" style={{ ...inputStyle, width: "auto" }} value={rangoDeudaDesdeEf} onChange={(e) => setRangoDeudaDesde(e.target.value)} />
+              <span style={{ color: COLORS.sub }}>a</span>
+              <input type="month" style={{ ...inputStyle, width: "auto" }} value={rangoDeudaHastaEf} onChange={(e) => setRangoDeudaHasta(e.target.value)} />
+              {(rangoDeudaDesde || rangoDeudaHasta) && (
+                <button onClick={() => { setRangoDeudaDesde(""); setRangoDeudaHasta(""); }} style={{ background: "none", border: "none", color: COLORS.finanzas, cursor: "pointer", fontSize: "0.78rem", textDecoration: "underline" }}>
+                  Ver todo
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="flex gap-2 flex-wrap">
+              {aniosDeudaDisponibles.map((y, i) => (
+                <button key={y} onClick={() => toggleAnio(y, aniosDeudaExcluidos, setAniosDeudaExcluidos)} style={pillBtnStyle(!aniosDeudaExcluidos.includes(y), PIE_COLORS[i % PIE_COLORS.length])}>
+                  {y}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <p style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, margin: "1.2rem 0 0.6rem" }}>Monto mensual</p>
       {mensualContinuo.length === 0 ? (
         <p style={{ color: COLORS.sub, fontSize: "0.85rem", marginBottom: "1.5rem" }}>Todavía no hay datos para mostrar.</p>
       ) : (
         <div className="rounded-2xl mb-6" style={{ background: COLORS.card, padding: "1.2rem" }}>
-          <div className="flex gap-2 flex-wrap mb-2">
-            <button style={pillBtnStyle(modoMensual === "continuo", COLORS.finanzas)} onClick={() => setModoMensual("continuo")}>Línea continua</button>
-            <button style={pillBtnStyle(modoMensual === "anio", COLORS.finanzas)} onClick={() => setModoMensual("anio")}>Comparar por año</button>
+          <div style={{ width: "100%", height: "220px" }}>
+            <ResponsiveContainer width="100%" height="100%">
+              {modoGraficoDeuda === "continuo" ? (
+                <LineChart data={mensualContinuoFiltrado}>
+                  <CartesianGrid stroke="#E3E0D5" vertical={false} />
+                  <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
+                  <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
+                  <Tooltip content={<DeudaTooltip />} />
+                  <ReferenceLine x={mesActualLabelContinuo} stroke="#C0392B" strokeDasharray="4 3" label={{ value: "Hoy", position: "top", fill: "#C0392B", fontSize: 10 }} />
+                  <Line type="monotone" dataKey="valor" name="Total" stroke={COLORS.finanzas} strokeWidth={2} dot={{ r: 3 }} />
+                </LineChart>
+              ) : (
+                <LineChart data={mensualPorAnio.rows}>
+                  <CartesianGrid stroke="#E3E0D5" vertical={false} />
+                  <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
+                  <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
+                  <Tooltip content={<DeudaTooltip />} />
+                  <ReferenceLine x={mesActualLabelAnio} stroke="#C0392B" strokeDasharray="4 3" label={{ value: "Hoy", position: "top", fill: "#C0392B", fontSize: 10 }} />
+                  {mensualPorAnio.years.map((y, i) => (
+                    aniosDeudaVisibles.includes(y) && (
+                      <Line key={y} type="monotone" dataKey={y} name={y} stroke={PIE_COLORS[i % PIE_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
+                    )
+                  ))}
+                </LineChart>
+              )}
+            </ResponsiveContainer>
           </div>
-          {modoMensual === "continuo" ? (
-            <>
-              <div className="flex gap-2 items-center flex-wrap mb-2" style={{ fontSize: "0.8rem" }}>
-                <span style={{ color: COLORS.sub }}>Periodo:</span>
-                <input type="month" style={{ ...inputStyle, width: "auto" }} value={rangoMensualDesdeEf} onChange={(e) => setRangoMensualDesde(e.target.value)} />
-                <span style={{ color: COLORS.sub }}>a</span>
-                <input type="month" style={{ ...inputStyle, width: "auto" }} value={rangoMensualHastaEf} onChange={(e) => setRangoMensualHasta(e.target.value)} />
-                {(rangoMensualDesde || rangoMensualHasta) && (
-                  <button onClick={() => { setRangoMensualDesde(""); setRangoMensualHasta(""); }} style={{ background: "none", border: "none", color: COLORS.finanzas, cursor: "pointer", fontSize: "0.78rem", textDecoration: "underline" }}>
-                    Ver todo
-                  </button>
-                )}
-              </div>
-              <div style={{ width: "100%", height: "220px" }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={mensualContinuoFiltrado}>
-                    <CartesianGrid stroke="#E3E0D5" vertical={false} />
-                    <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
-                    <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
-                    <Tooltip content={<DeudaTooltip />} />
-                    <ReferenceLine x={mesActualLabelContinuo} stroke="#C0392B" strokeDasharray="4 3" label={{ value: "Hoy", position: "top", fill: "#C0392B", fontSize: 10 }} />
-                    <Line type="monotone" dataKey="valor" name="Total" stroke={COLORS.finanzas} strokeWidth={2} dot={{ r: 3 }} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="flex gap-2 flex-wrap mb-2">
-                {mensualPorAnio.years.map((y, i) => (
-                  <button key={y} onClick={() => toggleAnio(y, aniosMensualExcluidos, setAniosMensualExcluidos)} style={pillBtnStyle(!aniosMensualExcluidos.includes(y), PIE_COLORS[i % PIE_COLORS.length])}>
-                    {y}
-                  </button>
-                ))}
-              </div>
-              <div style={{ width: "100%", height: "220px" }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={mensualPorAnio.rows}>
-                    <CartesianGrid stroke="#E3E0D5" vertical={false} />
-                    <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
-                    <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
-                    <Tooltip content={<DeudaTooltip />} />
-                    <ReferenceLine x={mesActualLabelAnio} stroke="#C0392B" strokeDasharray="4 3" label={{ value: "Hoy", position: "top", fill: "#C0392B", fontSize: 10 }} />
-                    {mensualPorAnio.years.map((y, i) => (
-                      aniosMensualVisibles.includes(y) && (
-                        <Line key={y} type="monotone" dataKey={y} name={y} stroke={PIE_COLORS[i % PIE_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
-                      )
-                    ))}
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </>
-          )}
         </div>
       )}
 
@@ -3602,63 +3598,33 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
         <p style={{ color: COLORS.sub, fontSize: "0.85rem", marginBottom: "1.5rem" }}>Todavía no hay datos para mostrar.</p>
       ) : (
         <div className="rounded-2xl mb-6" style={{ background: COLORS.card, padding: "1.2rem" }}>
-          <div className="flex gap-2 flex-wrap mb-2">
-            <button style={pillBtnStyle(modoSaldo === "continuo", COLORS.finanzas)} onClick={() => setModoSaldo("continuo")}>Línea continua</button>
-            <button style={pillBtnStyle(modoSaldo === "anio", COLORS.finanzas)} onClick={() => setModoSaldo("anio")}>Comparar por año</button>
+          <div style={{ width: "100%", height: "220px" }}>
+            <ResponsiveContainer width="100%" height="100%">
+              {modoGraficoDeuda === "continuo" ? (
+                <LineChart data={saldoContinuoFiltrado}>
+                  <CartesianGrid stroke="#E3E0D5" vertical={false} />
+                  <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
+                  <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => `${(v / 1000000).toLocaleString("es-CL", { maximumFractionDigits: 1 })}M`} />
+                  <Tooltip content={<DeudaTooltip />} />
+                  <ReferenceLine x={mesActualLabelContinuo} stroke="#C0392B" strokeDasharray="4 3" label={{ value: "Hoy", position: "top", fill: "#C0392B", fontSize: 10 }} />
+                  <Line type="monotone" dataKey="valor" name="Total" stroke={COLORS.finanzas} strokeWidth={2} dot={{ r: 3 }} />
+                </LineChart>
+              ) : (
+                <LineChart data={saldoPorAnio.rows}>
+                  <CartesianGrid stroke="#E3E0D5" vertical={false} />
+                  <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
+                  <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => `${(v / 1000000).toLocaleString("es-CL", { maximumFractionDigits: 1 })}M`} />
+                  <Tooltip content={<DeudaTooltip />} />
+                  <ReferenceLine x={mesActualLabelAnio} stroke="#C0392B" strokeDasharray="4 3" label={{ value: "Hoy", position: "top", fill: "#C0392B", fontSize: 10 }} />
+                  {saldoPorAnio.years.map((y, i) => (
+                    aniosDeudaVisibles.includes(y) && (
+                      <Line key={y} type="monotone" dataKey={y} name={y} stroke={PIE_COLORS[i % PIE_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
+                    )
+                  ))}
+                </LineChart>
+              )}
+            </ResponsiveContainer>
           </div>
-          {modoSaldo === "continuo" ? (
-            <>
-              <div className="flex gap-2 items-center flex-wrap mb-2" style={{ fontSize: "0.8rem" }}>
-                <span style={{ color: COLORS.sub }}>Periodo:</span>
-                <input type="month" style={{ ...inputStyle, width: "auto" }} value={rangoSaldoDesdeEf} onChange={(e) => setRangoSaldoDesde(e.target.value)} />
-                <span style={{ color: COLORS.sub }}>a</span>
-                <input type="month" style={{ ...inputStyle, width: "auto" }} value={rangoSaldoHastaEf} onChange={(e) => setRangoSaldoHasta(e.target.value)} />
-                {(rangoSaldoDesde || rangoSaldoHasta) && (
-                  <button onClick={() => { setRangoSaldoDesde(""); setRangoSaldoHasta(""); }} style={{ background: "none", border: "none", color: COLORS.finanzas, cursor: "pointer", fontSize: "0.78rem", textDecoration: "underline" }}>
-                    Ver todo
-                  </button>
-                )}
-              </div>
-              <div style={{ width: "100%", height: "220px" }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={saldoContinuoFiltrado}>
-                    <CartesianGrid stroke="#E3E0D5" vertical={false} />
-                    <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
-                    <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => `${(v / 1000000).toLocaleString("es-CL", { maximumFractionDigits: 1 })}M`} />
-                    <Tooltip content={<DeudaTooltip />} />
-                    <ReferenceLine x={mesActualLabelContinuo} stroke="#C0392B" strokeDasharray="4 3" label={{ value: "Hoy", position: "top", fill: "#C0392B", fontSize: 10 }} />
-                    <Line type="monotone" dataKey="valor" name="Total" stroke={COLORS.finanzas} strokeWidth={2} dot={{ r: 3 }} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="flex gap-2 flex-wrap mb-2">
-                {saldoPorAnio.years.map((y, i) => (
-                  <button key={y} onClick={() => toggleAnio(y, aniosSaldoExcluidos, setAniosSaldoExcluidos)} style={pillBtnStyle(!aniosSaldoExcluidos.includes(y), PIE_COLORS[i % PIE_COLORS.length])}>
-                    {y}
-                  </button>
-                ))}
-              </div>
-              <div style={{ width: "100%", height: "220px" }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={saldoPorAnio.rows}>
-                    <CartesianGrid stroke="#E3E0D5" vertical={false} />
-                    <XAxis dataKey="mesLabel" tick={{ fontSize: 11, fill: COLORS.sub }} />
-                    <YAxis tick={{ fontSize: 11, fill: COLORS.sub }} tickFormatter={(v) => `${(v / 1000000).toLocaleString("es-CL", { maximumFractionDigits: 1 })}M`} />
-                    <Tooltip content={<DeudaTooltip />} />
-                    <ReferenceLine x={mesActualLabelAnio} stroke="#C0392B" strokeDasharray="4 3" label={{ value: "Hoy", position: "top", fill: "#C0392B", fontSize: 10 }} />
-                    {saldoPorAnio.years.map((y, i) => (
-                      aniosSaldoVisibles.includes(y) && (
-                        <Line key={y} type="monotone" dataKey={y} name={y} stroke={PIE_COLORS[i % PIE_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
-                      )
-                    ))}
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </>
-          )}
         </div>
       )}
 
