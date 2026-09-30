@@ -3146,8 +3146,13 @@ function DeudaTooltip({ active, payload, label }) {
 function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasLargoPlazo }) {
   const mesActual = new Date().toISOString().slice(0, 7);
 
+  // Cualquier cuenta Pasivo se puede cargar acá a mano, incluidas las 3
+  // tarjetas: sirve para dejar registradas deudas antiguas de tarjeta que
+  // nunca quedaron como compra en cuotas en Detalle. Las cuotas de tarjeta
+  // presentes y futuras se siguen agregando solas (ver entradasTarjetas),
+  // así que no hay que cargarlas a mano.
   const cuentasPasivoManual = useMemo(
-    () => cuentas.filter((c) => c.tipo === "pasivo" && !CUENTAS_CUOTAS.includes(c.nombre)),
+    () => cuentas.filter((c) => c.tipo === "pasivo"),
     [cuentas]
   );
 
@@ -3376,28 +3381,60 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
   return (
     <div>
       <p style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, marginBottom: "0.6rem" }}>Agregar deuda de largo plazo</p>
-      <div className="mov-form-row flex gap-2 mb-2 flex-wrap">
+      <div className="deuda-form-grid mb-2">
         <style>{`
-          @media (max-width: 640px) {
-            .mov-form-row { flex-direction: column; }
-            .mov-form-row > * { width: 100% !important; flex: 1 1 auto !important; }
+          .deuda-form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 0.7rem 0.8rem;
+            align-items: end;
+          }
+          .deuda-form-grid label {
+            display: block;
+            font-size: 0.72rem;
+            color: ${COLORS.sub};
+            font-weight: 600;
+            margin-bottom: 0.25rem;
           }
         `}</style>
-        <input type="text" style={{ ...inputStyle, flex: 1 }} placeholder="Nombre de la deuda (opcional)" value={nombreDeuda} onChange={(e) => setNombreDeuda(e.target.value)} />
-        <select style={{ ...inputStyle, flex: 1 }} value={cuenta} onChange={(e) => setCuenta(e.target.value)}>
-          <option value="">Cuenta (Pasivo)...</option>
-          {cuentasPasivoManual.map((c) => (<option key={c.id} value={c.nombre}>{c.nombre}</option>))}
-        </select>
-        <input type="text" inputMode="decimal" style={{ ...inputStyle, flex: 1 }} placeholder="Monto inicial" value={montoInicial} onChange={(e) => { if (soloNumeroConSigno(e.target.value)) setMontoInicial(e.target.value); }} />
-        <input type="number" min="1" style={{ ...inputStyle, flex: 1 }} placeholder="Cantidad de meses" value={cantidadMeses} onChange={(e) => setCantidadMeses(e.target.value)} />
-        <input type="month" style={{ ...inputStyle, flex: 1 }} value={mesInicioInput} onChange={(e) => setMesInicioInput(e.target.value)} />
-        <input type="number" min="1" style={{ ...inputStyle, flex: 1 }} placeholder="Cuota mensual" value={cuotaMensualInput} onChange={(e) => setCuotaMensualInput(e.target.value)} />
-        <button style={btnStyle(COLORS.finanzas)} onClick={agregarDeuda}>
-          <Plus size={16} /> Agregar
-        </button>
+        <div>
+          <label htmlFor="deuda-nombre">Nombre (opcional)</label>
+          <input id="deuda-nombre" type="text" style={inputStyle} placeholder="Ej: Crédito auto" value={nombreDeuda} onChange={(e) => setNombreDeuda(e.target.value)} />
+        </div>
+        <div>
+          <label htmlFor="deuda-cuenta">Cuenta (Pasivo)</label>
+          <select id="deuda-cuenta" style={inputStyle} value={cuenta} onChange={(e) => setCuenta(e.target.value)}>
+            <option value="">Selecciona...</option>
+            {cuentasPasivoManual.map((c) => (<option key={c.id} value={c.nombre}>{c.nombre}</option>))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="deuda-monto">Monto inicial</label>
+          <input id="deuda-monto" type="text" inputMode="decimal" style={inputStyle} placeholder="Ej: 500000" value={montoInicial} onChange={(e) => { if (soloNumeroConSigno(e.target.value)) setMontoInicial(e.target.value); }} />
+        </div>
+        <div>
+          <label htmlFor="deuda-meses">Cantidad de meses</label>
+          <input id="deuda-meses" type="number" min="1" style={inputStyle} placeholder="Ej: 12" value={cantidadMeses} onChange={(e) => setCantidadMeses(e.target.value)} />
+        </div>
+        <div>
+          <label htmlFor="deuda-mes-inicio">Primer mes</label>
+          <input id="deuda-mes-inicio" type="month" style={inputStyle} value={mesInicioInput} onChange={(e) => setMesInicioInput(e.target.value)} />
+        </div>
+        <div>
+          <label htmlFor="deuda-cuota">Cuota mensual</label>
+          <input id="deuda-cuota" type="number" min="1" style={inputStyle} placeholder="Se sugiere sola" value={cuotaMensualInput} onChange={(e) => setCuotaMensualInput(e.target.value)} />
+        </div>
+        <div>
+          <button style={{ ...btnStyle(COLORS.finanzas), width: "100%", justifyContent: "center" }} onClick={agregarDeuda}>
+            <Plus size={16} /> Agregar
+          </button>
+        </div>
       </div>
-      <p style={{ color: COLORS.sub, fontSize: "0.75rem", marginTop: "-0.4rem", marginBottom: "0.6rem" }}>
+      <p style={{ color: COLORS.sub, fontSize: "0.75rem", marginTop: "0.4rem", marginBottom: "0.2rem" }}>
         La cuota mensual se sugiere sola (monto ÷ meses) pero es editable: si la cambias, la última cuota se ajusta para que la suma siga calzando con el monto inicial.
+      </p>
+      <p style={{ color: COLORS.sub, fontSize: "0.75rem", marginBottom: "0.6rem" }}>
+        Si eliges Tarjeta, Tarjeta Lider o Tarjeta USD, es solo para dejar registrada una deuda antigua de esa tarjeta (una que nunca quedó como compra en cuotas en Detalle). Las cuotas de tarjeta presentes y futuras se siguen agregando solas: no las cargues acá de nuevo.
       </p>
       {error && <p style={{ color: "#9C4A2E", fontSize: "0.8rem", marginBottom: "0.8rem" }}>{error}</p>}
 
