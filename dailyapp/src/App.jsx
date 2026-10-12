@@ -152,6 +152,9 @@ async function loadFinanzas(userId) {
     if (row?.data) data = { ...data, ...row.data };
   } catch (e) {
     console.error("No se pudo cargar", e);
+    // Si la carga falla NO hay que seguir con datos vacíos: el autoguardado
+    // los escribiría encima de lo que hay en la base y se perdería todo.
+    data.__errorCarga = true;
   }
   if (!data.cuentas || data.cuentas.length === 0) {
     data.cuentas = DEFAULT_CUENTAS;
@@ -162,8 +165,10 @@ async function saveFinanzas(userId, data) {
   try {
     const { error } = await supabase.from("app_data").upsert({ user_id: userId, data, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
     if (error) throw error;
+    return null;
   } catch (e) {
     console.error("No se pudo guardar", e);
+    return e?.message || "error desconocido";
   }
 }
 
@@ -499,6 +504,79 @@ function splitEnCuotas(total, n) {
   return partes;
 }
 
+/* ---------- Vínculo pagos <-> cuotas de deudas de largo plazo ----------
+   Una transferencia hacia una cuenta Pasivo puede guardar
+   "cuotasPagadasMeses": ["2026-10", ...] = los meses de cuota que ese pago
+   cubre (puede ser más de uno si se prepagan cuotas). Una cuota se
+   considera PAGADA si:
+     (a) su mes es anterior al primer mes con movimientos de esa cuenta
+         (todo lo previo se asume pagado), o
+     (b) algún pago a esa cuenta la tiene marcada en cuotasPagadasMeses.
+   El vínculo es por (cuenta, mes): cubre todas las cuotas de esa cuenta
+   que caen en ese mes. Todo se deriva de los movimientos: si se borra el
+   pago, la cuota vuelve a quedar pendiente sola. */
+
+// Cuotas de compras en cuotas de las 3 tarjetas (se generan solas desde Detalle).
+function entradasTarjetasDe(movimientos) {
+  return movimientos
+    .filter((m) => m.esCuota && CUENTAS_CUOTAS.includes(m.medio) && m.cronograma && m.cronograma.length)
+    .map((m) => ({
+      id: m.id,
+      origen: "tarjeta",
+      cuenta: m.medio,
+      descripcion: m.descripcion,
+      montoInicial: m.monto,
+      cantidadMeses: m.cuotaTotal || m.cronograma.length,
+      mesInicio: m.mesImpacto,
+      cronograma: m.cronograma,
+    }));
+}
+
+// Primer mes con movimientos por cuenta (y el global, como respaldo para
+// cuentas sin ningún movimiento todavía).
+function anclasPorCuenta(movimientos) {
+  const porCuenta = {};
+  let global = "";
+  movimientos.forEach((m) => {
+    if (!m.mesImpacto) return;
+    if (!global || m.mesImpacto < global) global = m.mesImpacto;
+    [m.medio, m.cuentaBalance, m.cuentaEERR].forEach((c) => {
+      if (c && (!porCuenta[c] || m.mesImpacto < porCuenta[c])) porCuenta[c] = m.mesImpacto;
+    });
+  });
+  return { porCuenta, global };
+}
+
+// Set de "cuenta|mes" ya cubiertos por algún pago. excluirId permite ignorar
+// los vínculos de un pago puntual (al editarlo).
+function mesesPagadosSet(movimientos, excluirId) {
+  const s = new Set();
+  movimientos.forEach((m) => {
+    if (m.id === excluirId || m.tipoMov !== "transferencia" || !m.cuentaBalance || !Array.isArray(m.cuotasPagadasMeses)) return;
+    m.cuotasPagadasMeses.forEach((mes) => s.add(`${m.cuentaBalance}|${mes}`));
+  });
+  return s;
+}
+
+// Meses de cuota todavía pendientes de una cuenta, con el monto total de
+// cuotas que caen en cada mes: [{ mes, monto }] ordenado del más antiguo.
+function cuotasPendientesCuenta(cuenta, movimientos, deudasLargoPlazo, excluirId) {
+  if (!cuenta) return [];
+  const { porCuenta, global } = anclasPorCuenta(movimientos);
+  const ancla = porCuenta[cuenta] || global || "";
+  const pagados = mesesPagadosSet(movimientos, excluirId);
+  const porMes = {};
+  [...entradasTarjetasDe(movimientos), ...(deudasLargoPlazo || [])]
+    .filter((d) => d.cuenta === cuenta)
+    .forEach((d) => {
+      d.cronograma.forEach((c) => {
+        if (c.mes < ancla || pagados.has(`${cuenta}|${c.mes}`)) return;
+        porMes[c.mes] = (porMes[c.mes] || 0) + c.monto;
+      });
+    });
+  return Object.keys(porMes).sort().map((mes) => ({ mes, monto: porMes[mes] }));
+}
+
 // Liquida un pago de una tarjeta en USD: marca como pagados (de más antiguo
 // a más nuevo) los movimientos en USD sin pagar hasta sumar EXACTAMENTE
 // usdAPagar, y los re-precifica al tipo de cambio real implícito del pago
@@ -624,9 +702,15 @@ function Finanzas({ onBack, userId }) {
   const [fechasFacturacion, setFechasFacturacion] = useState({});
   const [deudasLargoPlazo, setDeudasLargoPlazo] = useState([]);
   const [loaded, setLoaded] = useState(false);
+  const [errorPersistencia, setErrorPersistencia] = useState("");
 
   useEffect(() => {
     loadFinanzas(userId).then((d) => {
+      if (d.__errorCarga) {
+        // Sin loaded=true el autoguardado queda apagado: no se pisa la base.
+        setErrorPersistencia("No se pudieron cargar tus datos. No se guardará nada hasta que se resuelva: recarga la página.");
+        return;
+      }
       setCuentas(d.cuentas || []);
       setMovimientos(d.movimientos || []);
       setMontosFijos(d.montosFijos || []);
@@ -638,7 +722,10 @@ function Finanzas({ onBack, userId }) {
   }, [userId]);
 
   useEffect(() => {
-    if (loaded) saveFinanzas(userId, { cuentas, movimientos, montosFijos, indicadores, fechasFacturacion, deudasLargoPlazo });
+    if (!loaded) return;
+    saveFinanzas(userId, { cuentas, movimientos, montosFijos, indicadores, fechasFacturacion, deudasLargoPlazo }).then((err) => {
+      setErrorPersistencia(err ? `No se pudo guardar el último cambio (${err}). Reintenta o exporta un backup.` : "");
+    });
   }, [cuentas, movimientos, montosFijos, indicadores, fechasFacturacion, deudasLargoPlazo, loaded, userId]);
 
   return (
@@ -646,6 +733,10 @@ function Finanzas({ onBack, userId }) {
       <button onClick={onBack} className="flex items-center gap-1 mb-4" style={{ color: COLORS.sub, background: "none", border: "none", cursor: "pointer", fontFamily: "'Work Sans', sans-serif" }}>
         <ArrowLeft size={18} /> Inicio
       </button>
+
+      {errorPersistencia && (
+        <p style={{ color: "#9C4A2E", fontSize: "0.82rem", marginBottom: "0.8rem", fontWeight: 600 }}>{errorPersistencia}</p>
+      )}
 
       <p style={{ fontFamily: "'Fraunces', serif", fontSize: "1.4rem", fontWeight: 600, color: COLORS.finanzas, marginBottom: "1.2rem" }}>
         Finanzas
@@ -716,7 +807,7 @@ function Finanzas({ onBack, userId }) {
           setDeudasLargoPlazo={setDeudasLargoPlazo}
         />
       )}
-      {tab === "detalle" && <DetalleTab cuentas={cuentas} setCuentas={setCuentas} movimientos={movimientos} setMovimientos={setMovimientos} indicadores={indicadores} fechasFacturacion={fechasFacturacion} />}
+      {tab === "detalle" && <DetalleTab cuentas={cuentas} setCuentas={setCuentas} movimientos={movimientos} setMovimientos={setMovimientos} indicadores={indicadores} fechasFacturacion={fechasFacturacion} deudasLargoPlazo={deudasLargoPlazo} />}
       {tab === "deudas" && <DeudasTab cuentas={cuentas} movimientos={movimientos} deudasLargoPlazo={deudasLargoPlazo} setDeudasLargoPlazo={setDeudasLargoPlazo} />}
       {tab === "resultados" && <ResultadosTab cuentas={cuentas} movimientos={movimientos} fechasFacturacion={fechasFacturacion} />}
       {tab === "analisis" && <AnalisisTab cuentas={cuentas} movimientos={movimientos} />}
@@ -1254,7 +1345,7 @@ function disponiblesPorFecha(lista, fecha) {
   return lista.filter((c) => c.estado !== "inactiva" || (c.fechaInactivacion && fecha < c.fechaInactivacion));
 }
 
-function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicadores, fechasFacturacion }) {
+function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicadores, fechasFacturacion, deudasLargoPlazo }) {
   const [tipoMov, setTipoMov] = useState("gasto_ingreso");
   const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
   const [mesImpacto, setMesImpacto] = useState(new Date().toISOString().slice(0, 7));
@@ -1329,6 +1420,23 @@ function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicado
     return lista;
   }, [medios, balances]);
 
+  // Vínculo pago <-> cuotas: si la transferencia va a una cuenta Pasivo con
+  // cuotas pendientes, se ofrece marcar qué meses de cuota cubre el pago
+  // (por defecto, la más antigua pendiente).
+  const [mesesCuotasSel, setMesesCuotasSel] = useState([]);
+  const pendientesCuentaSel = useMemo(() => {
+    if (tipoMov !== "transferencia" || !cuentaBalance) return [];
+    if (cuentas.find((c) => c.nombre === cuentaBalance)?.tipo !== "pasivo") return [];
+    return cuotasPendientesCuenta(cuentaBalance, movimientos, deudasLargoPlazo);
+  }, [tipoMov, cuentaBalance, cuentas, movimientos, deudasLargoPlazo]);
+  const primerPendienteSel = pendientesCuentaSel[0]?.mes || "";
+  useEffect(() => {
+    setMesesCuotasSel(primerPendienteSel ? [primerPendienteSel] : []);
+  }, [tipoMov, cuentaBalance, primerPendienteSel]);
+  function toggleMesCuotaSel(mes) {
+    setMesesCuotasSel((prev) => (prev.includes(mes) ? prev.filter((x) => x !== mes) : [...prev, mes]));
+  }
+
   useEffect(() => { if (!medios.find((c) => c.nombre === medio)) setMedio(""); }, [medios]);
   useEffect(() => { if (!(tipoMov === "transferencia" && cuentaBalance === "Tarjeta USD")) setUsdPagados(""); }, [tipoMov, cuentaBalance]);
   useEffect(() => { if (!balances.find((c) => c.nombre === cuentaBalance)) setCuentaBalance(""); }, [balances]);
@@ -1382,6 +1490,10 @@ function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicado
       refinanciamientoId: esRefinanciamiento && CUENTAS_CUOTAS.includes(medio) ? refiId : null,
       facturacionTipo: campos.includes("cuentaUnica") && CUENTAS_CUOTAS.includes(cuentaUnica) && facturacionTipo ? facturacionTipo : null,
       facturacionMesDestino: campos.includes("cuentaUnica") && CUENTAS_CUOTAS.includes(cuentaUnica) && facturacionTipo === "cuotasFuturas" ? facturacionMesDestino : null,
+      cuotasPagadasMeses:
+        tipoMov === "transferencia" && mesesCuotasSel.length
+          ? mesesCuotasSel.filter((mes) => pendientesCuentaSel.some((p) => p.mes === mes)).sort()
+          : null,
     };
 
     // Refinanciamiento: repactación de la deuda de la tarjeta. Se registra
@@ -1934,7 +2046,12 @@ function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicado
       montoCLP = Number(editTemp.monto) || 0;
     }
     const { monto, montoSecundario } = calcularMontos(editTemp.tipoMov, editTemp.medio, editTemp.cuentaBalance, editTemp.cuentaEERR, montoCLP, cuentas);
-    setMovimientos(movimientos.map((m) => (m.id === editId ? { ...editTemp, monto, montoSecundario, montoUSD } : m)));
+    // Los meses de cuota vinculados solo valen mientras el pago siga siendo
+    // una transferencia a la misma cuenta Pasivo; si no, se desvinculan.
+    const original = movimientos.find((m) => m.id === editId);
+    const mantieneVinculo = editTemp.tipoMov === "transferencia" && original && original.cuentaBalance === editTemp.cuentaBalance;
+    const cuotasPagadasMeses = mantieneVinculo && Array.isArray(editTemp.cuotasPagadasMeses) && editTemp.cuotasPagadasMeses.length ? editTemp.cuotasPagadasMeses : null;
+    setMovimientos(movimientos.map((m) => (m.id === editId ? { ...editTemp, monto, montoSecundario, montoUSD, cuotasPagadasMeses } : m)));
     setEditId(null);
     setEditTemp(null);
   }
@@ -2026,6 +2143,25 @@ function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicado
               <p style={{ fontSize: "0.75rem", color: COLORS.sub, marginTop: "-0.5rem", marginBottom: "0.5rem" }}>
                 Sin pagar en Tarjeta USD: US${usdSinPagarTarjetaUSD.toLocaleString("es-CL")}
               </p>
+            )}
+            {pendientesCuentaSel.length > 0 && (
+              <div className="mb-2">
+                <p style={{ fontSize: "0.75rem", color: COLORS.sub, marginBottom: "0.3rem", fontWeight: 600 }}>
+                  ¿Qué cuotas paga este pago? (opcional, puedes marcar varias)
+                </p>
+                <div className="flex gap-2 flex-wrap">
+                  {pendientesCuentaSel.slice(0, 18).map((p) => (
+                    <button key={p.mes} onClick={() => toggleMesCuotaSel(p.mes)} style={pillBtnStyle(mesesCuotasSel.includes(p.mes), COLORS.finanzas)}>
+                      {fmtMesImpacto(p.mes)} · {fmtMoney(p.monto)}
+                    </button>
+                  ))}
+                </div>
+                {pendientesCuentaSel.length > 18 && (
+                  <p style={{ fontSize: "0.7rem", color: COLORS.sub, marginTop: "0.3rem" }}>
+                    Se muestran las 18 más próximas; quedan {pendientesCuentaSel.length - 18} más.
+                  </p>
+                )}
+              </div>
             )}
             {campos.includes("medio") && CUENTAS_CUOTAS.includes(medio) && (
               <div className="mov-form-row flex gap-2 mb-2 flex-wrap items-center">
@@ -2299,6 +2435,27 @@ function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicado
                       </td>
                       <td style={tdStyle}>
                         <input style={{ ...inputStyle, ...cellInputStyle }} value={editTemp.descripcion} onChange={(e) => setEditTemp({ ...editTemp, descripcion: e.target.value })} />
+                        {editTemp.tipoMov === "transferencia" && cuentas.find((c) => c.nombre === editTemp.cuentaBalance)?.tipo === "pasivo" && (() => {
+                          // Opciones = cuotas pendientes (sin contar los vínculos de ESTE pago) + las ya marcadas en él.
+                          const marcadas = Array.isArray(editTemp.cuotasPagadasMeses) ? editTemp.cuotasPagadasMeses : [];
+                          const opciones = cuotasPendientesCuenta(editTemp.cuentaBalance, movimientos, deudasLargoPlazo, editId).slice(0, 18);
+                          const meses = [...new Set([...opciones.map((o) => o.mes), ...marcadas])].sort();
+                          if (!meses.length) return null;
+                          return (
+                            <div className="flex gap-1 flex-wrap" style={{ marginTop: "0.4rem" }}>
+                              <span style={{ fontSize: "0.68rem", color: COLORS.sub, width: "100%" }}>Cuotas que paga:</span>
+                              {meses.map((mes) => (
+                                <button
+                                  key={mes}
+                                  onClick={() => setEditTemp({ ...editTemp, cuotasPagadasMeses: marcadas.includes(mes) ? marcadas.filter((x) => x !== mes) : [...marcadas, mes].sort() })}
+                                  style={pillBtnStyle(marcadas.includes(mes), COLORS.finanzas)}
+                                >
+                                  {fmtMesImpacto(mes)}
+                                </button>
+                              ))}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td style={{ ...tdStyle, textAlign: "right" }}>
                         {editTemp.divisa === "USD" ? (
@@ -2347,6 +2504,11 @@ function DetalleTab({ cuentas, setCuentas, movimientos, setMovimientos, indicado
                       {m.esCuota && <span style={{ marginLeft: "0.4rem", fontSize: "0.68rem", color: COLORS.sub }}>({m.cuotaTotal} cuotas)</span>}
                       {m.esComision && <span style={{ marginLeft: "0.4rem", fontSize: "0.68rem", color: "#9C4A2E" }}>Comisión</span>}
                       {m.esRefinanciamiento && <span style={{ marginLeft: "0.4rem", fontSize: "0.68rem", color: "#534AB7" }}>Refinanciamiento</span>}
+                      {Array.isArray(m.cuotasPagadasMeses) && m.cuotasPagadasMeses.length > 0 && (
+                        <div style={{ fontSize: "0.68rem", color: "#3B6E4F" }}>
+                          Paga cuotas: {m.cuotasPagadasMeses.map(fmtMesImpacto).join(", ")}
+                        </div>
+                      )}
                     </td>
                     <td style={{ ...tdStyle, textAlign: "right" }}>
                       <span style={{ fontWeight: 500 }}>{fmtMoney(m.monto)}</span>
@@ -3233,36 +3395,25 @@ function DeudaLargoPlazoTab({ cuentas, movimientos, deudasLargoPlazo, setDeudasL
 
   // Entradas automáticas: una por cada compra en cuotas ya existente sobre
   // las 3 tarjetas (mismo dato que usa Facturación, sin duplicarlo).
-  const entradasTarjetas = useMemo(
-    () =>
-      movimientos
-        .filter((m) => m.esCuota && CUENTAS_CUOTAS.includes(m.medio) && m.cronograma && m.cronograma.length)
-        .map((m) => ({
-          id: m.id,
-          origen: "tarjeta",
-          cuenta: m.medio,
-          descripcion: m.descripcion,
-          montoInicial: m.monto,
-          cantidadMeses: m.cuotaTotal || m.cronograma.length,
-          mesInicio: m.mesImpacto,
-          cronograma: m.cronograma,
-        })),
-    [movimientos]
-  );
+  const entradasTarjetas = useMemo(() => entradasTarjetasDe(movimientos), [movimientos]);
 
   const todasLasEntradas = useMemo(() => [...entradasTarjetas, ...deudasLargoPlazo], [entradasTarjetas, deudasLargoPlazo]);
 
-  // Pagado = lo que cae en meses hasta el mes actual inclusive (mismo
-  // criterio que usa el resto de la app: "hasta el mes de hoy" ya ocurrió).
-  const conProgreso = useMemo(
-    () =>
-      todasLasEntradas.map((d) => {
-        const pagado = d.cronograma.filter((c) => c.mes <= mesActual).reduce((a, c) => a + c.monto, 0);
-        const restante = d.montoInicial - pagado;
-        return { ...d, pagado, restante };
-      }),
-    [todasLasEntradas, mesActual]
-  );
+  // Pagado = cuotas anteriores al primer mes con movimientos de esa cuenta
+  // (se asumen pagadas) + cuotas vinculadas a un pago (transferencia a la
+  // cuenta con ese mes marcado en Detalle). Ver "Vínculo pagos <-> cuotas".
+  const conProgreso = useMemo(() => {
+    const { porCuenta, global } = anclasPorCuenta(movimientos);
+    const vinculados = mesesPagadosSet(movimientos);
+    return todasLasEntradas.map((d) => {
+      const ancla = porCuenta[d.cuenta] || global || "";
+      const pagado = d.cronograma
+        .filter((c) => c.mes < ancla || vinculados.has(`${d.cuenta}|${c.mes}`))
+        .reduce((a, c) => a + c.monto, 0);
+      const restante = d.montoInicial - pagado;
+      return { ...d, pagado, restante };
+    });
+  }, [todasLasEntradas, movimientos]);
 
   // Agrupadas por cuenta: si hay varias cuotas o refinanciamientos activos
   // sobre la misma cuenta (p.ej. varias compras en cuotas de "Tarjeta"), se
