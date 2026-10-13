@@ -533,12 +533,13 @@ function entradasTarjetasDe(movimientos) {
 }
 
 // Primer mes con movimientos por cuenta (y el global, como respaldo para
-// cuentas sin ningún movimiento todavía).
+// cuentas sin ningún movimiento todavía). Los saldos iniciales NO cuentan
+// como movimiento: solo fijan el punto de partida de la cuenta, no actividad.
 function anclasPorCuenta(movimientos) {
   const porCuenta = {};
   let global = "";
   movimientos.forEach((m) => {
-    if (!m.mesImpacto) return;
+    if (!m.mesImpacto || m.tipoMov === "saldo_inicial") return;
     if (!global || m.mesImpacto < global) global = m.mesImpacto;
     [m.medio, m.cuentaBalance, m.cuentaEERR].forEach((c) => {
       if (c && (!porCuenta[c] || m.mesImpacto < porCuenta[c])) porCuenta[c] = m.mesImpacto;
