@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
 import { supabase } from "./supabaseClient.js";
 import {
@@ -147,9 +147,12 @@ const DEFAULT_CUENTAS = [
 async function loadFinanzas(userId) {
   let data = { cuentas: [], movimientos: [], montosFijos: [], indicadores: null, fechasFacturacion: {}, deudasLargoPlazo: [] };
   try {
-    const { data: row, error } = await supabase.from("app_data").select("data").eq("user_id", userId).maybeSingle();
+    const { data: row, error } = await supabase.from("app_data").select("data, updated_at").eq("user_id", userId).maybeSingle();
     if (error) throw error;
     if (row?.data) data = { ...data, ...row.data };
+    // Versión de la nube que se está viendo: se usa para no pisar cambios
+    // más nuevos hechos desde otro dispositivo (ver saveFinanzas).
+    data.__updatedAt = row?.updated_at || null;
   } catch (e) {
     console.error("No se pudo cargar", e);
     // Si la carga falla NO hay que seguir con datos vacíos: el autoguardado
@@ -161,14 +164,60 @@ async function loadFinanzas(userId) {
   }
   return data;
 }
-async function saveFinanzas(userId, data) {
+// Guarda con protección contra pisar datos más nuevos de otro dispositivo:
+// solo escribe si la fila en la nube sigue en la misma versión (updated_at)
+// que este dispositivo cargó/guardó por última vez.
+// Devuelve { ok:true, updatedAt } | { conflicto:true } | { error:"mensaje" }.
+//  - ultimaVersion: updated_at conocido (null si la fila aún no existía).
+//  - forzar: true escribe igual, pisando lo que haya en la nube.
+async function saveFinanzas(userId, data, ultimaVersion, forzar = false) {
   try {
-    const { error } = await supabase.from("app_data").upsert({ user_id: userId, data, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    const ahora = new Date().toISOString();
+    if (forzar) {
+      const { data: row, error } = await supabase
+        .from("app_data")
+        .upsert({ user_id: userId, data, updated_at: ahora }, { onConflict: "user_id" })
+        .select("updated_at")
+        .single();
+      if (error) throw error;
+      return { ok: true, updatedAt: row.updated_at };
+    }
+    if (!ultimaVersion) {
+      // La fila no existía al cargar: se crea. Si otro dispositivo la creó
+      // en el intertanto, el insert falla por duplicado => conflicto.
+      const { data: row, error } = await supabase
+        .from("app_data")
+        .insert({ user_id: userId, data, updated_at: ahora })
+        .select("updated_at")
+        .single();
+      if (error) {
+        if (error.code === "23505") return { conflicto: true };
+        throw error;
+      }
+      return { ok: true, updatedAt: row.updated_at };
+    }
+    const { data: rows, error } = await supabase
+      .from("app_data")
+      .update({ data, updated_at: ahora })
+      .eq("user_id", userId)
+      .eq("updated_at", ultimaVersion)
+      .select("updated_at");
     if (error) throw error;
-    return null;
+    if (!rows || rows.length === 0) return { conflicto: true };
+    return { ok: true, updatedAt: rows[0].updated_at };
   } catch (e) {
     console.error("No se pudo guardar", e);
-    return e?.message || "error desconocido";
+    return { error: e?.message || "error desconocido" };
+  }
+}
+// Solo la versión (updated_at) de la nube, para detectar cambios de otro dispositivo.
+async function leerVersionNube(userId) {
+  try {
+    const { data: row, error } = await supabase.from("app_data").select("updated_at").eq("user_id", userId).maybeSingle();
+    if (error) throw error;
+    return row ? row.updated_at : null;
+  } catch (e) {
+    return undefined; // no se pudo consultar: no se concluye nada
   }
 }
 
@@ -704,6 +753,37 @@ function Finanzas({ onBack, userId }) {
   const [deudasLargoPlazo, setDeudasLargoPlazo] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [errorPersistencia, setErrorPersistencia] = useState("");
+  const [conflicto, setConflicto] = useState(false);
+
+  // Protección contra pisar datos de otro dispositivo:
+  //  - versionRef: updated_at de la nube que este dispositivo vio por última vez.
+  //  - skipSaveRef: evita guardar justo después de cargar algo desde la nube.
+  //  - conflictoRef: con conflicto pendiente se detiene el autoguardado.
+  //  - cadenaGuardadoRef: guardados en fila (uno a la vez), para que cada uno
+  //    use la versión que dejó el anterior y no se "conflicten" entre sí.
+  //  - estadoRef: último estado en pantalla, por si se elige "guardar lo mío".
+  const versionRef = useRef(null);
+  const skipSaveRef = useRef(false);
+  const conflictoRef = useRef(false);
+  const cadenaGuardadoRef = useRef(Promise.resolve());
+  const estadoRef = useRef(null);
+  estadoRef.current = { cuentas, movimientos, montosFijos, indicadores, fechasFacturacion, deudasLargoPlazo };
+
+  function aplicarDatos(d) {
+    skipSaveRef.current = true;
+    versionRef.current = d.__updatedAt || null;
+    setCuentas(d.cuentas || []);
+    setMovimientos(d.movimientos || []);
+    setMontosFijos(d.montosFijos || []);
+    setIndicadores(d.indicadores || null);
+    setFechasFacturacion(d.fechasFacturacion || {});
+    setDeudasLargoPlazo(d.deudasLargoPlazo || []);
+    setLoaded(true);
+  }
+  function marcarConflicto() {
+    conflictoRef.current = true;
+    setConflicto(true);
+  }
 
   useEffect(() => {
     loadFinanzas(userId).then((d) => {
@@ -712,22 +792,75 @@ function Finanzas({ onBack, userId }) {
         setErrorPersistencia("No se pudieron cargar tus datos. No se guardará nada hasta que se resuelva: recarga la página.");
         return;
       }
-      setCuentas(d.cuentas || []);
-      setMovimientos(d.movimientos || []);
-      setMontosFijos(d.montosFijos || []);
-      setIndicadores(d.indicadores || null);
-      setFechasFacturacion(d.fechasFacturacion || {});
-      setDeudasLargoPlazo(d.deudasLargoPlazo || []);
-      setLoaded(true);
+      aplicarDatos(d);
     });
   }, [userId]);
 
   useEffect(() => {
+    if (!loaded || conflicto) return;
+    if (skipSaveRef.current) { skipSaveRef.current = false; return; }
+    const payload = { cuentas, movimientos, montosFijos, indicadores, fechasFacturacion, deudasLargoPlazo };
+    cadenaGuardadoRef.current = cadenaGuardadoRef.current
+      .then(() => (conflictoRef.current ? null : saveFinanzas(userId, payload, versionRef.current)))
+      .then((r) => {
+        if (!r) return;
+        if (r.ok) {
+          versionRef.current = r.updatedAt;
+          setErrorPersistencia("");
+        } else if (r.conflicto) {
+          marcarConflicto();
+        } else if (r.error) {
+          setErrorPersistencia(`No se pudo guardar el último cambio (${r.error}). Reintenta o exporta un backup.`);
+        }
+      });
+  }, [cuentas, movimientos, montosFijos, indicadores, fechasFacturacion, deudasLargoPlazo, loaded, conflicto, userId]);
+
+  // Al volver a la app (cambio de pestaña/ventana o de dispositivo): si la
+  // nube tiene una versión más nueva y aquí no hay nada pendiente de guardar,
+  // se recarga sola para mostrar lo último.
+  useEffect(() => {
     if (!loaded) return;
-    saveFinanzas(userId, { cuentas, movimientos, montosFijos, indicadores, fechasFacturacion, deudasLargoPlazo }).then((err) => {
-      setErrorPersistencia(err ? `No se pudo guardar el último cambio (${err}). Reintenta o exporta un backup.` : "");
-    });
-  }, [cuentas, movimientos, montosFijos, indicadores, fechasFacturacion, deudasLargoPlazo, loaded, userId]);
+    async function revisarNube() {
+      if (document.visibilityState !== "visible" || conflictoRef.current) return;
+      await cadenaGuardadoRef.current; // primero terminar guardados en curso
+      if (conflictoRef.current) return;
+      const versionNube = await leerVersionNube(userId);
+      if (versionNube === undefined || versionNube === null) return;
+      if (versionNube !== versionRef.current) {
+        const d = await loadFinanzas(userId);
+        if (!d.__errorCarga && !conflictoRef.current) aplicarDatos(d);
+      }
+    }
+    document.addEventListener("visibilitychange", revisarNube);
+    window.addEventListener("focus", revisarNube);
+    return () => {
+      document.removeEventListener("visibilitychange", revisarNube);
+      window.removeEventListener("focus", revisarNube);
+    };
+  }, [loaded, userId]);
+
+  // Resolución de un conflicto: traer lo de la nube (se descartan los cambios
+  // de este dispositivo) o guardar lo de este dispositivo encima de la nube.
+  async function usarVersionNube() {
+    const d = await loadFinanzas(userId);
+    if (d.__errorCarga) { setErrorPersistencia("No se pudo cargar la versión de la nube. Intenta de nuevo."); return; }
+    conflictoRef.current = false;
+    setConflicto(false);
+    setErrorPersistencia("");
+    aplicarDatos(d);
+  }
+  async function guardarMiVersion() {
+    if (!window.confirm("Esto reemplaza lo que hay en la nube con los datos de este dispositivo. ¿Continuar?")) return;
+    const r = await saveFinanzas(userId, estadoRef.current, versionRef.current, true);
+    if (r.ok) {
+      versionRef.current = r.updatedAt;
+      conflictoRef.current = false;
+      setConflicto(false);
+      setErrorPersistencia("");
+    } else {
+      setErrorPersistencia(`No se pudo guardar (${r.error || "error desconocido"}).`);
+    }
+  }
 
   return (
     <div className="w-full max-w-2xl">
@@ -735,6 +868,23 @@ function Finanzas({ onBack, userId }) {
         <ArrowLeft size={18} /> Inicio
       </button>
 
+      {conflicto && (
+        <div className="rounded-xl mb-3" style={{ background: "#F3E3DE", padding: "0.8rem 1rem" }}>
+          <p style={{ color: "#9C4A2E", fontSize: "0.85rem", fontWeight: 600, marginBottom: "0.3rem" }}>
+            Hay datos más nuevos en la nube (guardados desde otro dispositivo).
+          </p>
+          <p style={{ color: COLORS.ink, fontSize: "0.8rem", marginBottom: "0.6rem" }}>
+            No se guardó tu último cambio para no pisarlos. Elige qué versión conservar:
+          </p>
+          <div className="flex gap-2 flex-wrap">
+            <button style={btnStyle(COLORS.finanzas)} onClick={usarVersionNube}>Cargar la versión de la nube</button>
+            <button style={ghostBtnStyle("#9C4A2E")} onClick={guardarMiVersion}>Guardar la de este dispositivo</button>
+          </div>
+          <p style={{ color: COLORS.sub, fontSize: "0.72rem", marginTop: "0.5rem" }}>
+            "Cargar la versión de la nube" descarta los cambios de este dispositivo que no alcanzaron a guardarse.
+          </p>
+        </div>
+      )}
       {errorPersistencia && (
         <p style={{ color: "#9C4A2E", fontSize: "0.82rem", marginBottom: "0.8rem", fontWeight: 600 }}>{errorPersistencia}</p>
       )}
